@@ -25,6 +25,8 @@ anyhow = "1"
 thiserror = "2"
 # サンドボックス実行（一時ディレクトリ・プロセス制御）
 tempfile = "3"
+# 子プロセスのタイムアウト kill
+wait-timeout = "0.2"
 # タイムスタンプ（レポート生成）
 chrono = { version = "0.4", features = ["serde"] }
 

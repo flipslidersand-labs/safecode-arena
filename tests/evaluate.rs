@@ -58,3 +58,41 @@ fn evaluate_without_candidates_fails() {
         .failure()
         .stderr(predicate::str::contains("候補ファイルを"));
 }
+
+#[test]
+fn evaluate_json_format_emits_structured_output() {
+    let cand = write_candidate("ok", "pub fn add(a: i32, b: i32) -> i32 { a + b }\n");
+
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .args(["evaluate", "--format", "json"])
+        .arg(cand.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"candidate_id\""))
+        .stdout(predicate::str::contains("\"score\""))
+        .stdout(predicate::str::contains("\"Passed\""));
+}
+
+#[test]
+fn evaluate_with_external_tests_dir() {
+    let cand = write_candidate("ok", "pub fn add(a: i32, b: i32) -> i32 { a + b }\n");
+
+    // 外部統合テスト（候補クレート名は "candidate"）
+    let tests_dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tests_dir.path().join("ext.rs"),
+        "#[test]\nfn external_add_works() { assert_eq!(candidate::add(2, 3), 5); }\n",
+    )
+    .unwrap();
+
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(cand.path())
+        .args(["--tests", tests_dir.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("50.0"))
+        .stdout(predicate::str::contains("✅"));
+}

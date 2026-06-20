@@ -1,31 +1,23 @@
-//! 採点ルーブリック。重みは `docs/spec.md` の評価軸と一致させる。
-//!
-//! correctness: 50, security: 20, performance: 15,
-//! maintainability: 10, resource_usage: 5
+//! 採点ルーブリック。重みは `config::Rubric`（既定値は `docs/spec.md` と一致）。
 //!
 //! MVP では correctness（コンパイル+テスト通過）のみを実測し、
 //! 残りの軸は 0 点（未計測）として扱う。
 
+use crate::config::Rubric;
 use crate::model::{Evaluation, StageOutcome};
 
-pub const W_CORRECTNESS: f64 = 50.0;
-pub const W_SECURITY: f64 = 20.0;
-pub const W_PERFORMANCE: f64 = 15.0;
-pub const W_MAINTAINABILITY: f64 = 10.0;
-pub const W_RESOURCE: f64 = 5.0;
-
-/// MVP の採点: コンパイル通過で correctness の半分、
-/// テスト通過で残り半分を付与。
-pub fn score(compile: &StageOutcome, test: &StageOutcome) -> f64 {
+/// 採点: コンパイル通過で correctness の半分、テスト通過で残り半分を付与。
+///
+/// security / performance / maintainability / resource_usage は
+/// Phase 3 以降で実装（現状は加点なし）。
+pub fn score(compile: &StageOutcome, test: &StageOutcome, rubric: &Rubric) -> f64 {
     let mut s = 0.0;
     if compile.is_passed() {
-        s += W_CORRECTNESS * 0.5;
+        s += rubric.correctness * 0.5;
     }
     if test.is_passed() {
-        s += W_CORRECTNESS * 0.5;
+        s += rubric.correctness * 0.5;
     }
-    // security / performance / maintainability / resource_usage は
-    // Phase 3 以降で実装（現状は加点なし）。
     s
 }
 
@@ -53,20 +45,32 @@ mod tests {
 
     #[test]
     fn compile_and_test_pass_gives_full_correctness() {
-        assert_eq!(score(&passed(), &passed()), W_CORRECTNESS);
+        let r = Rubric::default();
+        assert_eq!(score(&passed(), &passed(), &r), r.correctness);
     }
 
     #[test]
     fn compile_only_gives_half_correctness() {
+        let r = Rubric::default();
         assert_eq!(
-            score(&passed(), &StageOutcome::Skipped),
-            W_CORRECTNESS * 0.5
+            score(&passed(), &StageOutcome::Skipped, &r),
+            r.correctness * 0.5
         );
     }
 
     #[test]
     fn compile_fail_gives_zero() {
-        assert_eq!(score(&failed(), &StageOutcome::Skipped), 0.0);
+        let r = Rubric::default();
+        assert_eq!(score(&failed(), &StageOutcome::Skipped, &r), 0.0);
+    }
+
+    #[test]
+    fn custom_rubric_weight_is_used() {
+        let r = Rubric {
+            correctness: 80.0,
+            ..Rubric::default()
+        };
+        assert_eq!(score(&passed(), &passed(), &r), 80.0);
     }
 
     #[test]

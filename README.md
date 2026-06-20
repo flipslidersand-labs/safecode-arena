@@ -49,7 +49,7 @@ cargo fmt
 
 ## ステータス
 
-✅ Phase 1 完了（compile → test → 採点 → レポートが一気通貫で動作）。次は Phase 2（タイムアウト kill・複数候補設定）。進捗は GitHub Issue #1「全体スケジュール」を参照。
+✅ Phase 2 完了（タイムアウト kill・採点ルーブリック設定・`--format json`・外部 `--tests` 対応）。次は Phase 3（多軸採点: security/performance/maintainability）。進捗は GitHub Issue #1「全体スケジュール」を参照。
 
 ## ライセンス
 
