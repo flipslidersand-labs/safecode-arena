@@ -4,6 +4,9 @@
 //!   safecode evaluate <candidate.rs> [--tests <dir>] [--timeout-secs N] [--out report.md]
 
 use clap::{Parser, Subcommand};
+use safecode_arena::{pipeline, report, scoring};
+use std::path::Path;
+use std::time::Duration;
 
 #[derive(Parser)]
 #[command(name = "safecode", version, about = "AI生成コード検証ランナー")]
@@ -35,20 +38,33 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Evaluate {
             candidates,
-            tests,
+            // tests は Phase 2 で外部テストディレクトリ対応時に使用する。
+            tests: _,
             timeout_secs,
             out,
         } => {
-            // TODO(Phase 1): 候補読み込み → runner で compile/test → scoring → report
-            // 現状はパイプラインの骨格のみ。implementation-guide.md の Phase 1 で実装。
-            eprintln!(
-                "evaluate: {} 候補, tests={:?}, timeout={}s, out={:?}",
-                candidates.len(),
-                tests,
-                timeout_secs,
-                out
-            );
-            eprintln!("(Phase 1 未実装: パイプライン本体をここに実装する)");
+            if candidates.is_empty() {
+                anyhow::bail!("候補ファイルを 1 つ以上指定してください");
+            }
+            let timeout = Duration::from_secs(timeout_secs);
+
+            let mut evals = Vec::with_capacity(candidates.len());
+            for path in &candidates {
+                let candidate = pipeline::load_candidate(Path::new(path))?;
+                eprintln!("評価中: {} ...", candidate.id);
+                evals.push(pipeline::evaluate_candidate(&candidate, timeout)?);
+            }
+
+            let ranked = scoring::rank(evals);
+            let markdown = report::render(&ranked);
+
+            match out {
+                Some(path) => {
+                    std::fs::write(&path, markdown)?;
+                    eprintln!("レポートを書き出しました: {path}");
+                }
+                None => print!("{markdown}"),
+            }
             Ok(())
         }
     }

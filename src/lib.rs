@@ -10,6 +10,7 @@
 //! - Markdown レポートを生成
 
 pub mod model;
+pub mod pipeline;
 pub mod report;
 pub mod runner;
 pub mod scoring;

@@ -38,3 +38,47 @@ pub fn rank(mut evals: Vec<Evaluation>) -> Vec<Evaluation> {
     });
     evals
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Evaluation;
+
+    fn passed() -> StageOutcome {
+        StageOutcome::Passed { duration_ms: 1 }
+    }
+    fn failed() -> StageOutcome {
+        StageOutcome::Failed { detail: "x".into() }
+    }
+
+    #[test]
+    fn compile_and_test_pass_gives_full_correctness() {
+        assert_eq!(score(&passed(), &passed()), W_CORRECTNESS);
+    }
+
+    #[test]
+    fn compile_only_gives_half_correctness() {
+        assert_eq!(
+            score(&passed(), &StageOutcome::Skipped),
+            W_CORRECTNESS * 0.5
+        );
+    }
+
+    #[test]
+    fn compile_fail_gives_zero() {
+        assert_eq!(score(&failed(), &StageOutcome::Skipped), 0.0);
+    }
+
+    #[test]
+    fn rank_orders_by_score_desc() {
+        let mk = |id: &str, s: f64| Evaluation {
+            candidate_id: id.into(),
+            compile: passed(),
+            test: passed(),
+            score: s,
+        };
+        let ranked = rank(vec![mk("a", 25.0), mk("b", 50.0), mk("c", 0.0)]);
+        let ids: Vec<_> = ranked.iter().map(|e| e.candidate_id.as_str()).collect();
+        assert_eq!(ids, vec!["b", "a", "c"]);
+    }
+}
