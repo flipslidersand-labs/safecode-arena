@@ -1,8 +1,9 @@
 //! SafeCode Arena CLI — `safecode`
 //!
 //! コマンド:
-//!   safecode evaluate <candidate.rs>... [--tests <dir>] [--timeout-secs N]
-//!            [--out <file>] [--format markdown|json] [--config <safecode.toml>]
+//!   safecode evaluate <candidate.rs>... [--tests <dir>] [--prop-tests <dir>]
+//!            [--timeout-secs N] [--out <file>] [--format markdown|json]
+//!            [--config <safecode.toml>]
 
 use clap::{Parser, Subcommand, ValueEnum};
 use safecode_arena::config::Rubric;
@@ -33,6 +34,10 @@ enum Command {
         /// 統合テストとして含める `.rs` を置いたディレクトリ（任意）。
         #[arg(long)]
         tests: Option<String>,
+        /// proptest を使った property test ファイルを置いたディレクトリ（任意）。
+        /// 指定すると proptest が dev-dependency に追加されて実行される。
+        #[arg(long)]
+        prop_tests: Option<String>,
         /// 各ステージのタイムアウト秒数。
         #[arg(long, default_value_t = 60)]
         timeout_secs: u64,
@@ -54,6 +59,7 @@ fn main() -> anyhow::Result<()> {
         Command::Evaluate {
             candidates,
             tests,
+            prop_tests,
             timeout_secs,
             out,
             format,
@@ -65,16 +71,22 @@ fn main() -> anyhow::Result<()> {
             let timeout = Duration::from_secs(timeout_secs);
             let rubric = Rubric::load(config.as_deref())?;
             let tests_dir = tests.as_deref().map(Path::new);
+            let prop_tests_dir = prop_tests.as_deref().map(Path::new);
 
             let mut evals = Vec::with_capacity(candidates.len());
             for path in &candidates {
                 let candidate = pipeline::load_candidate(Path::new(path))?;
                 eprintln!("評価中: {} ...", candidate.id);
                 evals.push(pipeline::evaluate_candidate(
-                    &candidate, timeout, &rubric, tests_dir,
+                    &candidate,
+                    timeout,
+                    &rubric,
+                    tests_dir,
+                    prop_tests_dir,
                 )?);
             }
 
+            scoring::assign_performance(&mut evals, &rubric);
             let ranked = scoring::rank(evals);
             let rendered = match format {
                 Format::Markdown => report::render(&ranked),

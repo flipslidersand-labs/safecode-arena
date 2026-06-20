@@ -1,5 +1,9 @@
-//! Phase 1 の E2E テスト。`safecode evaluate` を実バイナリで起動し、
-//! 一時 Cargo プロジェクトでの compile/test/採点/レポートを検証する。
+//! E2E テスト。`safecode evaluate` を実バイナリで起動し、
+//! 一時 Cargo プロジェクトでの compile/test/clippy/採点/レポートを検証する。
+//!
+//! Phase 3 以降のスコア上限:
+//!   prop_test なし → correctness = 80%（compile 40% + test 40%）
+//!   安全(20) + 性能(15) + 保守(10) = 45、合計 = 40+45 = 85.0
 //!
 //! NOTE: 内部で `cargo build`/`cargo test` を起動するため実行は遅い。
 
@@ -28,9 +32,11 @@ fn evaluate_compiling_candidate_scores_above_zero() {
         .arg(cand.path())
         .assert()
         .success()
-        // 採点表に ✅ が出て、スコア 0 ではない（コンパイル+テスト通過で 50.0）
+        // compile+test+clippy(0 warn)+性能(単独最速) 85.0
+        // prop_test は Skipped なので correctness は 80% (40+40)
         .stdout(predicate::str::contains("✅"))
-        .stdout(predicate::str::contains("50.0"))
+        .stdout(predicate::str::contains("85.0"))
+        .stdout(predicate::str::contains("0 warn"))
         .stdout(predicate::str::contains("採用候補"));
 }
 
@@ -70,6 +76,8 @@ fn evaluate_json_format_emits_structured_output() {
         .assert()
         .success()
         .stdout(predicate::str::contains("\"candidate_id\""))
+        .stdout(predicate::str::contains("\"axes\""))
+        .stdout(predicate::str::contains("\"maintainability\""))
         .stdout(predicate::str::contains("\"score\""))
         .stdout(predicate::str::contains("\"Passed\""));
 }
@@ -93,6 +101,7 @@ fn evaluate_with_external_tests_dir() {
         .args(["--tests", tests_dir.path().to_str().unwrap()])
         .assert()
         .success()
-        .stdout(predicate::str::contains("50.0"))
-        .stdout(predicate::str::contains("✅"));
+        .stdout(predicate::str::contains("85.0"))
+        .stdout(predicate::str::contains("✅"))
+        .stdout(predicate::str::contains("0 warn"));
 }

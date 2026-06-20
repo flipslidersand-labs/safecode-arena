@@ -1,6 +1,7 @@
 //! 検証パイプライン駆動。候補を一時 Cargo プロジェクトへ展開し、
 //! compile → test → 採点 までを実行する。
 
+use crate::analysis::{count_clippy_warnings, SourceMetrics};
 use crate::config::Rubric;
 use crate::model::{Candidate, Evaluation, Language, StageOutcome};
 use crate::{runner, scoring};
@@ -18,6 +19,19 @@ edition = "2021"
 
 [lib]
 path = "src/lib.rs"
+"#;
+
+/// proptest を dev-dependency に持つ Cargo.toml。
+const CARGO_TOML_WITH_PROPTEST: &str = r#"[package]
+name = "candidate"
+version = "0.0.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[dev-dependencies]
+proptest = "1"
 "#;
 
 /// 候補ファイルを読み込んで `Candidate` を生成する。
@@ -54,25 +68,35 @@ fn copy_tests(src_dir: &Path, dest_tests: &Path) -> Result<()> {
     Ok(())
 }
 
-/// 1 候補を一時 Cargo プロジェクトへ展開し、compile → test → 採点する。
+/// 1 候補を一時 Cargo プロジェクトへ展開し、compile → test → clippy → prop_test → 採点する。
 ///
-/// compile が通らなかった場合、test は `Skipped`。
-/// `tests_dir` を指定すると、その `.rs` を統合テストとして `cargo test` に含める。
+/// - compile が通らなかった場合、test / clippy / prop_test はすべて `Skipped`。
+/// - `tests_dir`: 統合テスト `.rs` を置いたディレクトリ（任意）。
+/// - `prop_tests_dir`: proptest ファイルを置いたディレクトリ（任意）。指定時は
+///   proptest を dev-dependency に追加して実行する。
 pub fn evaluate_candidate(
     candidate: &Candidate,
     timeout: Duration,
     rubric: &Rubric,
     tests_dir: Option<&Path>,
+    prop_tests_dir: Option<&Path>,
 ) -> Result<Evaluation> {
     let dir = tempfile::tempdir().context("一時ディレクトリの生成に失敗")?;
     let root = dir.path();
     fs::create_dir_all(root.join("src")).context("src ディレクトリの作成に失敗")?;
-    fs::write(root.join("Cargo.toml"), CARGO_TOML_TEMPLATE).context("Cargo.toml の書込に失敗")?;
+
+    // proptest を使う場合は専用 Cargo.toml を使う
+    let toml = if prop_tests_dir.is_some() {
+        CARGO_TOML_WITH_PROPTEST
+    } else {
+        CARGO_TOML_TEMPLATE
+    };
+    fs::write(root.join("Cargo.toml"), toml).context("Cargo.toml の書込に失敗")?;
     fs::write(root.join("src").join("lib.rs"), &candidate.source)
         .context("候補ソースの書込に失敗")?;
 
-    if let Some(tests_dir) = tests_dir {
-        copy_tests(tests_dir, &root.join("tests"))?;
+    if let Some(dir) = tests_dir {
+        copy_tests(dir, &root.join("tests"))?;
     }
 
     // compile
@@ -80,7 +104,7 @@ pub fn evaluate_candidate(
     build.arg("build").current_dir(root);
     let compile = runner::run_stage("compile", build, timeout);
 
-    // test（compile 成功時のみ。候補内 #[cfg(test)] と外部統合テストを実行）
+    // test（compile 成功時のみ）
     let test = if compile.is_passed() {
         let mut t = Command::new("cargo");
         t.arg("test").current_dir(root);
@@ -89,11 +113,51 @@ pub fn evaluate_candidate(
         StageOutcome::Skipped
     };
 
-    let score = scoring::score(&compile, &test, rubric);
+    // clippy（compile 成功時のみ。stderr から warning 数を取得）
+    let (clippy, clippy_warnings) = if compile.is_passed() {
+        let mut c = Command::new("cargo");
+        c.args(["clippy", "--", "-W", "clippy::all"])
+            .current_dir(root);
+        let (outcome, stderr) = runner::run_stage_capture("clippy", c, timeout);
+        let warn_count = count_clippy_warnings(&stderr);
+        (outcome, warn_count)
+    } else {
+        (StageOutcome::Skipped, 0)
+    };
+
+    // property test（--prop-tests 指定 + compile 成功時のみ）
+    let prop_test = if compile.is_passed() {
+        if let Some(prop_dir) = prop_tests_dir {
+            copy_tests(prop_dir, &root.join("tests"))?;
+            let mut pt = Command::new("cargo");
+            pt.arg("test").current_dir(root);
+            runner::run_stage("prop_test", pt, timeout)
+        } else {
+            StageOutcome::Skipped
+        }
+    } else {
+        StageOutcome::Skipped
+    };
+
+    let metrics = SourceMetrics::analyze(&candidate.source);
+    let axes = scoring::axes_without_performance(
+        &compile,
+        &test,
+        &prop_test,
+        &clippy,
+        clippy_warnings,
+        &metrics,
+        rubric,
+    );
+    let score = axes.total();
     Ok(Evaluation {
         candidate_id: candidate.id.clone(),
         compile,
         test,
+        clippy,
+        clippy_warnings,
+        prop_test,
+        axes,
         score,
     })
 }

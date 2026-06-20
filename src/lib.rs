@@ -9,6 +9,7 @@
 //! - 結果を採点ルーブリックに従ってスコア化
 //! - Markdown レポートを生成
 
+pub mod analysis;
 pub mod config;
 pub mod model;
 pub mod pipeline;

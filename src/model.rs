@@ -37,6 +37,35 @@ impl StageOutcome {
     pub fn is_passed(&self) -> bool {
         matches!(self, StageOutcome::Passed { .. })
     }
+
+    /// 所要時間(ms)。Passed のときのみ Some。
+    pub fn duration_ms(&self) -> Option<u64> {
+        match self {
+            StageOutcome::Passed { duration_ms } => Some(*duration_ms),
+            _ => None,
+        }
+    }
+}
+
+/// 評価軸ごとの獲得点。各軸の上限は `config::Rubric` の重み。
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct AxisScores {
+    pub correctness: f64,
+    pub security: f64,
+    pub performance: f64,
+    pub maintainability: f64,
+    pub resource_usage: f64,
+}
+
+impl AxisScores {
+    /// 全軸の合計。
+    pub fn total(&self) -> f64 {
+        self.correctness
+            + self.security
+            + self.performance
+            + self.maintainability
+            + self.resource_usage
+    }
 }
 
 /// 1 候補に対する検証結果の集約。
@@ -45,6 +74,14 @@ pub struct Evaluation {
     pub candidate_id: String,
     pub compile: StageOutcome,
     pub test: StageOutcome,
-    /// 0.0〜100.0 の総合スコア。
+    /// cargo clippy の実行結果。compile が Passed のときのみ実行。
+    pub clippy: StageOutcome,
+    /// clippy が報告した warning 数。clippy が Skipped/Failed のときは 0。
+    pub clippy_warnings: usize,
+    /// property test の実行結果。--prop-tests 指定時のみ実行。
+    pub prop_test: StageOutcome,
+    /// 軸別の獲得点。
+    pub axes: AxisScores,
+    /// 0.0〜100.0 の総合スコア（= axes.total()）。
     pub score: f64,
 }

@@ -11,6 +11,16 @@ fn stage_cell(o: &StageOutcome) -> String {
     }
 }
 
+fn clippy_cell(o: &StageOutcome, warnings: usize) -> String {
+    match o {
+        StageOutcome::Passed { .. } if warnings == 0 => "✅ 0 warn".to_string(),
+        StageOutcome::Passed { .. } => format!("⚠️ {warnings} warn"),
+        StageOutcome::Failed { .. } => "❌ failed".to_string(),
+        StageOutcome::TimedOut { limit_ms } => format!("⏱ timeout({limit_ms}ms)"),
+        StageOutcome::Skipped => "— skipped".to_string(),
+    }
+}
+
 /// ランク済みの評価から Markdown レポートを生成する。
 pub fn render(evals: &[Evaluation]) -> String {
     let mut out = String::new();
@@ -19,16 +29,26 @@ pub fn render(evals: &[Evaluation]) -> String {
         "生成日時: {}\n\n",
         chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
     ));
-    out.push_str("| 順位 | 候補 | スコア | コンパイル | テスト |\n");
-    out.push_str("| ---- | ---- | ------ | ---------- | ------ |\n");
+    out.push_str(
+        "| 順位 | 候補 | 合計 | 正誤 | 安全 | 性能 | 保守 | コンパイル | テスト | Clippy | PropTest |\n",
+    );
+    out.push_str(
+        "| ---- | ---- | ---- | ---- | ---- | ---- | ---- | ---------- | ------ | ------ | -------- |\n",
+    );
     for (i, e) in evals.iter().enumerate() {
         out.push_str(&format!(
-            "| {} | {} | {:.1} | {} | {} |\n",
+            "| {} | {} | {:.1} | {:.1} | {:.1} | {:.1} | {:.1} | {} | {} | {} | {} |\n",
             i + 1,
             e.candidate_id,
             e.score,
+            e.axes.correctness,
+            e.axes.security,
+            e.axes.performance,
+            e.axes.maintainability,
             stage_cell(&e.compile),
             stage_cell(&e.test),
+            clippy_cell(&e.clippy, e.clippy_warnings),
+            stage_cell(&e.prop_test),
         ));
     }
     if let Some(best) = evals.first() {

@@ -17,6 +17,86 @@ fn summarize(mut file: std::fs::File) -> String {
     buf.lines().take(20).collect::<Vec<_>>().join("\n")
 }
 
+/// プロセスをタイムアウト付きで実行し、ステージ結果と stderr を返す。
+///
+/// [`run_stage`] と同じ動作だが、呼び出し元が stderr を検査できるよう
+/// 文字列として返す（clippy warning 数のカウント等に使う）。
+pub fn run_stage_capture(
+    label: &str,
+    command: std::process::Command,
+    limit: Duration,
+) -> (StageOutcome, String) {
+    let err_file = match tempfile::tempfile() {
+        Ok(f) => f,
+        Err(e) => {
+            return (
+                StageOutcome::Failed {
+                    detail: format!("{label}: 一時ファイル生成失敗: {e}"),
+                },
+                String::new(),
+            );
+        }
+    };
+    let err_for_child = match err_file.try_clone() {
+        Ok(f) => f,
+        Err(e) => {
+            return (
+                StageOutcome::Failed {
+                    detail: format!("{label}: ファイル複製失敗: {e}"),
+                },
+                String::new(),
+            );
+        }
+    };
+    let mut cmd = command;
+    cmd.stdout(Stdio::null()).stderr(Stdio::from(err_for_child));
+
+    let start = Instant::now();
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StageOutcome::Failed {
+                    detail: format!("{label}: 起動失敗: {e}"),
+                },
+                String::new(),
+            );
+        }
+    };
+
+    let outcome = match child.wait_timeout(limit) {
+        Ok(Some(status)) => {
+            let elapsed = start.elapsed();
+            if status.success() {
+                StageOutcome::Passed {
+                    duration_ms: elapsed.as_millis() as u64,
+                }
+            } else {
+                StageOutcome::Failed {
+                    detail: summarize(
+                        err_file
+                            .try_clone()
+                            .unwrap_or_else(|_| tempfile::tempfile().unwrap()),
+                    ),
+                }
+            }
+        }
+        Ok(None) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            StageOutcome::TimedOut {
+                limit_ms: limit.as_millis() as u64,
+            }
+        }
+        Err(e) => StageOutcome::Failed {
+            detail: format!("{label}: 待機失敗: {e}"),
+        },
+    };
+
+    let captured = summarize(err_file);
+    (outcome, captured)
+}
+
 /// プロセスをタイムアウト付きで実行し、ステージ結果へ変換する。
 ///
 /// 出力（stdout/stderr）は一時ファイルへリダイレクトする。パイプ
