@@ -18,17 +18,25 @@ safecode evaluate candidate.rs --tests tests/
 
 # 複数候補を比較してレポート出力
 safecode evaluate cand_a.rs cand_b.rs cand_c.rs --tests tests/ --out report.md
+
+# property test (proptest) も実行
+safecode evaluate candidate.rs --prop-tests prop/
+
+# JSON 出力 / 採点ルーブリックの上書き
+safecode evaluate candidate.rs --format json --config safecode.toml
 ```
 
 ## 採点ルーブリック
 
-| 軸              | 重み |
-| --------------- | ---- |
-| correctness     | 50   |
-| security        | 20   |
-| performance     | 15   |
-| maintainability | 10   |
-| resource_usage  | 5    |
+| 軸              | 重み | 算出                                       |
+| --------------- | ---- | ------------------------------------------ |
+| correctness     | 50   | compile 40% + test 40% + property test 20% |
+| security        | 20   | unsafe ヒューリスティック 50% + clippy 50% |
+| performance     | 15   | 候補間 compile+test 時間の相対比較         |
+| maintainability | 10   | 関数長ヒューリスティック 60% + clippy 40%  |
+| resource_usage  | 5    | 未計測（Phase 4 以降）                     |
+
+重みは `safecode.toml` の `[weights]` で上書きできる。
 
 ## 開発
 
@@ -49,7 +57,7 @@ cargo fmt
 
 ## ステータス
 
-✅ Phase 2 完了（タイムアウト kill・採点ルーブリック設定・`--format json`・外部 `--tests` 対応）。次は Phase 3（多軸採点: security/performance/maintainability）。進捗は GitHub Issue #1「全体スケジュール」を参照。
+✅ Phase 3 完了（多軸採点: correctness/security/performance/maintainability を実測。clippy ステージ + property test 対応）。次は Phase 4（Wasm サンドボックス・SQLite 永続化）。進捗は GitHub Issue #1「全体スケジュール」を参照。
 
 ## ライセンス
 

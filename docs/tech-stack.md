@@ -31,16 +31,23 @@
 | `assert_cmd` | CLI の E2E テスト |
 | `predicates` | 出力アサーション  |
 
-## 発展フェーズで追加予定（MVP では未使用）
+## Phase 3 で利用（候補プロジェクト側のツール）
 
-| クレート      | 用途                                    | フェーズ |
-| ------------- | --------------------------------------- | -------- |
-| `wasmtime`    | WASI による capability ベース隔離       | Phase 4  |
-| `tree-sitter` | 静的解析・コード類似度・maintainability | Phase 3  |
-| `rusqlite`    | 評価結果の永続化                        | Phase 4  |
-| `cargo-fuzz`  | Fuzzing 実行（外部ツール）              | Phase 3  |
-| `proptest`    | Property-based Test                     | Phase 3  |
-| `criterion`   | 性能ベンチマーク                        | Phase 3  |
+| ツール         | 用途                                        | 備考                                           |
+| -------------- | ------------------------------------------- | ---------------------------------------------- |
+| `cargo clippy` | security / maintainability の lint シグナル | Rust ツールチェーン同梱。clippy ステージで実行 |
+| `proptest`     | property test（`--prop-tests` 指定時）      | 候補の一時プロジェクトに dev-dependency 追加   |
+
+## 発展フェーズで追加予定（未使用）
+
+| クレート      | 用途                                             | フェーズ |
+| ------------- | ------------------------------------------------ | -------- |
+| `wasmtime`    | WASI による capability ベース隔離                | Phase 4  |
+| `tree-sitter` | AST 解析・コード類似度（精緻な maintainability） | Phase 4+ |
+| `rusqlite`    | 評価結果の永続化                                 | Phase 4  |
+| `cargo-fuzz`  | Fuzzing 実行（外部ツール）                       | Phase 4+ |
+| `criterion`   | 性能ベンチマーク（絶対性能）                     | Phase 4+ |
+| `cargo-audit` | 依存の脆弱性スキャン                             | Phase 4+ |
 
 ## 開発ツール
 

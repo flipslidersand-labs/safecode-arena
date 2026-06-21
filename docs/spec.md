@@ -34,13 +34,13 @@ Fuzzing
 
 ## 評価軸（採点ルーブリック）
 
-| 軸              | 重み | MVP での扱い               |
-| --------------- | ---- | -------------------------- |
-| correctness     | 50   | ✅ コンパイル+テストで実測 |
-| security        | 20   | ⬜ Phase 3（静的解析）     |
-| performance     | 15   | ⬜ Phase 3（Criterion）    |
-| maintainability | 10   | ⬜ Phase 3（Tree-sitter）  |
-| resource_usage  | 5    | ⬜ Phase 3                 |
+| 軸              | 重み | 実装状況                                      |
+| --------------- | ---- | --------------------------------------------- |
+| correctness     | 50   | ✅ compile 40% + test 40% + property test 20% |
+| security        | 20   | ✅ unsafe ヒューリスティック 50% + clippy 50% |
+| performance     | 15   | ✅ 候補間 compile+test 時間の相対比較         |
+| maintainability | 10   | ✅ 関数長ヒューリスティック 60% + clippy 40%  |
+| resource_usage  | 5    | ⬜ 未計測（Phase 4 以降）                     |
 
 ## MVP の境界線
 

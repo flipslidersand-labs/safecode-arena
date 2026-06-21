@@ -33,8 +33,27 @@ struct Evaluation {
     candidate_id: String,
     compile: StageOutcome,
     test: StageOutcome,
-    score: f64,        // 0.0〜100.0
+    clippy: StageOutcome,      // compile 成功時のみ実行
+    clippy_warnings: usize,    // clippy が報告した warning 数
+    prop_test: StageOutcome,   // --prop-tests 指定時のみ実行
+    axes: AxisScores,          // 軸別の獲得点
+    score: f64,                // = axes.total()（0.0〜100.0）
 }
+```
+
+### `AxisScores`
+
+各評価軸の獲得点。上限は `config::Rubric` の重み。
+
+```rust
+struct AxisScores {
+    correctness: f64,
+    security: f64,
+    performance: f64,
+    maintainability: f64,
+    resource_usage: f64,
+}
+// total() = 全軸の合計
 ```
 
 ## 状態遷移（StageOutcome）
@@ -50,48 +69,63 @@ enum StageOutcome {
 }
 ```
 
-ステージ遷移ルール（MVP）:
+ステージ遷移ルール:
 
 ```text
-compile = Passed ──→ test を実行
-compile = Failed/TimedOut ──→ test = Skipped
+compile = Passed ──→ test / clippy を実行（prop_test は --prop-tests 指定時）
+compile = Failed/TimedOut ──→ test / clippy / prop_test = Skipped
 ```
 
 ## 採点モデル（重み）
 
-`docs/spec.md` の評価軸と一致させる。`src/scoring.rs` の定数が単一の真実源。
+重みは `config::Rubric`（既定値 = `docs/spec.md` の評価軸）。`safecode.toml` で上書き可。
+各軸の達成率は `src/scoring.rs` / `src/analysis.rs` が算出する。
 
 ```text
-correctness     50   ← MVP で実測（compile 25 + test 25）
-security        20   ← Phase 3
-performance     15   ← Phase 3
-maintainability 10   ← Phase 3
-resource_usage   5   ← Phase 3
+correctness     50   ← compile 40% + test 40% + prop_test 20%
+security        20   ← unsafe ヒューリスティック 50% + clippy 50%
+performance     15   ← 候補間 compile+test 時間の相対比較（最速=満点）
+maintainability 10   ← 関数長ヒューリスティック 60% + clippy 40%
+resource_usage   5   ← 未計測（0）。Phase 4 以降
 合計            100
 ```
+
+- security / maintainability は **compile 成功時のみ加点**。
+- clippy warning: security は 1 件 -0.1、maintainability は 3 件ごと -0.1。
+- prop_test 失敗（反例検出）は correctness の prop 分（20%）が入らない。
 
 ## 永続化（Phase 4）
 
 MVP では永続化しない（結果は標準出力 or Markdown ファイル）。
 Phase 4 で SQLite に以下を保存する想定:
 
-| テーブル      | 主なカラム                                        |
-| ------------- | ------------------------------------------------- |
-| `runs`        | id, created_at, spec_hash                         |
-| `candidates`  | id, run_id, source_hash, language                 |
-| `evaluations` | candidate_id, run_id, compile, test, score (JSON) |
+| テーブル      | 主なカラム                                              |
+| ------------- | ------------------------------------------------------- |
+| `runs`        | id, created_at, spec_hash                               |
+| `candidates`  | id, run_id, source_hash, language                       |
+| `evaluations` | candidate_id, run_id, compile, test, axes, score (JSON) |
 
 関係: `runs 1 — N candidates 1 — 1 evaluations`
 
 ## インターフェース（JSON 出力）
 
-`--format json` 指定時（Phase 2）に出力する形。`Evaluation` を serde でそのままシリアライズ。
+`--format json` 指定時に出力する形。`Evaluation` を serde でそのままシリアライズ。
 
 ```json
 {
   "candidate_id": "cand_b",
   "compile": { "Passed": { "duration_ms": 1200 } },
   "test": { "Passed": { "duration_ms": 800 } },
-  "score": 50.0
+  "clippy": { "Passed": { "duration_ms": 300 } },
+  "clippy_warnings": 0,
+  "prop_test": "Skipped",
+  "axes": {
+    "correctness": 40.0,
+    "security": 20.0,
+    "performance": 15.0,
+    "maintainability": 10.0,
+    "resource_usage": 0.0
+  },
+  "score": 85.0
 }
 ```

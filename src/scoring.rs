@@ -176,7 +176,6 @@ mod tests {
 
     #[test]
     fn unsafe_code_loses_security_points() {
-        let r = Rubric::default();
         let clean = axes(&passed(1), &passed(1), "fn f(){}");
         let risky = axes(&passed(1), &passed(1), "fn f(){ unsafe {} }");
         assert!(clean.security > risky.security);
