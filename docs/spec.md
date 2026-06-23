@@ -62,7 +62,6 @@ Fuzzing
 - Mutation / Differential Testing（発展）
 - 複数 AI API 連携・コード生成（本プロジェクトは「検証」が責務）
 - GitHub PR 連携（発展）
-- 結果の永続化（SQLite）（Phase 4）
 
 ## 利用イメージ
 

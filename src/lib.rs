@@ -16,5 +16,6 @@ pub mod pipeline;
 pub mod report;
 pub mod runner;
 pub mod scoring;
+pub mod store;
 
 pub use model::{Candidate, Evaluation, Language, StageOutcome};

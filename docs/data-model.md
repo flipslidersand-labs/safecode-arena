@@ -94,18 +94,24 @@ resource_usage   5   ← 未計測（0）。Phase 4 以降
 - clippy warning: security は 1 件 -0.1、maintainability は 3 件ごと -0.1。
 - prop_test 失敗（反例検出）は correctness の prop 分（20%）が入らない。
 
-## 永続化（Phase 4）
+## 永続化（Phase 4 / `src/store.rs`）
 
-MVP では永続化しない（結果は標準出力 or Markdown ファイル）。
-Phase 4 で SQLite に以下を保存する想定:
+`--db <path>` 指定時に SQLite（rusqlite, bundled）へ run を保存する。スキーマ:
 
-| テーブル      | 主なカラム                                              |
-| ------------- | ------------------------------------------------------- |
-| `runs`        | id, created_at, spec_hash                               |
-| `candidates`  | id, run_id, source_hash, language                       |
-| `evaluations` | candidate_id, run_id, compile, test, axes, score (JSON) |
+| テーブル      | カラム                                                            |
+| ------------- | ----------------------------------------------------------------- |
+| `runs`        | `id` PK, `created_at` TEXT                                        |
+| `evaluations` | `id` PK, `run_id` FK→runs, `candidate_id`, `score`, `detail_json` |
 
-関係: `runs 1 — N candidates 1 — 1 evaluations`
+- `detail_json` は `Evaluation` 全体を serde で JSON 直列化したもの（将来のスキーマ追加に強い）。
+- `candidate_id` と `score` は突き合わせ・クエリ用に列として持つ（インデックス `idx_eval_run`）。
+- 関係: `runs 1 — N evaluations`。
+
+### リグレッション検出
+
+`evaluate --db` 実行時、保存前に直近 run の `candidate_id → score` を取得し、同一候補のスコアが
+`--regression-threshold`（既定 1.0）以上下落していれば stderr に警告する（`store::find_regressions`）。
+`safecode history --db <path>` で run 履歴（候補数・最良候補・最良スコア）を一覧表示する。
 
 ## インターフェース（JSON 出力）
 

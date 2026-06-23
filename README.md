@@ -24,6 +24,10 @@ safecode evaluate candidate.rs --prop-tests prop/
 
 # JSON 出力 / 採点ルーブリックの上書き
 safecode evaluate candidate.rs --format json --config safecode.toml
+
+# 結果を DB に保存（過去 run と比較してリグレッション検出）
+safecode evaluate candidate.rs --db history.db
+safecode history --db history.db
 ```
 
 ## 採点ルーブリック

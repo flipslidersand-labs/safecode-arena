@@ -1,7 +1,10 @@
 # ADR-005: 永続化（SQLite）は Phase 4 まで導入しない
 
 - **日付**: 2026-06-20
-- **状態**: Accepted
+- **状態**: Superseded（Phase 4-a で実装。`src/store.rs` / `docs/data-model.md` 参照）
+
+> この ADR の「MVP〜Phase 3 では永続化しない」という判断は当時の意図どおり機能した。
+> Phase 4 で予定どおり rusqlite(bundled) による永続化・リグレッション検出を実装済み。
 
 ## 背景
 

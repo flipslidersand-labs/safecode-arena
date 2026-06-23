@@ -105,3 +105,47 @@ fn evaluate_with_external_tests_dir() {
         .stdout(predicate::str::contains("✅"))
         .stdout(predicate::str::contains("0 warn"));
 }
+
+#[test]
+fn db_persists_runs_and_detects_regression() {
+    let work = tempfile::tempdir().unwrap();
+    let db = work.path().join("history.db");
+    // 候補 ID を固定するため同名ファイルを使う。
+    let subject = work.path().join("subject.rs");
+
+    // run #1: clippy 警告なしのクリーンな候補（安全 20）
+    std::fs::write(&subject, "pub fn add(a: i32, b: i32) -> i32 { a + b }\n").unwrap();
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(&subject)
+        .args(["--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("run #1 を保存"));
+
+    // run #2: 未使用変数で clippy 警告 → スコア下落 → リグレッション
+    std::fs::write(
+        &subject,
+        "pub fn add(a: i32, b: i32) -> i32 { let x = 1; a + b }\n",
+    )
+    .unwrap();
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(&subject)
+        .args(["--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("リグレッション検出"))
+        .stderr(predicate::str::contains("subject"));
+
+    // history: 2 run が並ぶ
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .args(["history", "--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("#1"))
+        .stdout(predicate::str::contains("#2"));
+}
