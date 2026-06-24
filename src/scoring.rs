@@ -35,12 +35,17 @@ fn clippy_maintainability_ratio(warnings: usize) -> f64 {
 /// - `prop_test`: property test ステージの結果（correctness に反映）
 /// - `clippy`: clippy ステージの結果（security / maintainability に反映）
 /// - `clippy_warnings`: clippy が報告した warning 数
+///
+/// Phase 4 追加パラメータ:
+/// - `wasm`: Wasm サンドボックス実行の結果（resource_usage に反映）
+#[allow(clippy::too_many_arguments)]
 pub fn axes_without_performance(
     compile: &StageOutcome,
     test: &StageOutcome,
     prop_test: &StageOutcome,
     clippy: &StageOutcome,
     clippy_warnings: usize,
+    wasm: &StageOutcome,
     metrics: &SourceMetrics,
     rubric: &Rubric,
 ) -> AxisScores {
@@ -73,12 +78,20 @@ pub fn axes_without_performance(
         (0.0, 0.0)
     };
 
+    // resource_usage: Wasm サンドボックスで正常実行できたら満点、失敗/タイムアウトは 0。
+    // 未実行（--wasm-entry なし or compile 失敗）は Skipped → 0。
+    let resource_usage = if wasm.is_passed() {
+        rubric.resource_usage
+    } else {
+        0.0
+    };
+
     AxisScores {
         correctness,
         security,
         maintainability,
         performance: 0.0,
-        resource_usage: 0.0,
+        resource_usage,
     }
 }
 
@@ -139,6 +152,7 @@ mod tests {
             &StageOutcome::Skipped,
             &StageOutcome::Skipped,
             0,
+            &StageOutcome::Skipped,
             &metrics(src),
             &Rubric::default(),
         )
@@ -161,6 +175,7 @@ mod tests {
             &passed(1),
             &StageOutcome::Skipped,
             0,
+            &StageOutcome::Skipped,
             &metrics("fn f(){}"),
             &r,
         );
@@ -190,6 +205,7 @@ mod tests {
             &StageOutcome::Skipped,
             &passed(1),
             0,
+            &StageOutcome::Skipped,
             &metrics("fn f(){}"),
             &r,
         );
@@ -199,6 +215,7 @@ mod tests {
             &StageOutcome::Skipped,
             &passed(1),
             5,
+            &StageOutcome::Skipped,
             &metrics("fn f(){}"),
             &r,
         );
@@ -213,6 +230,7 @@ mod tests {
             &StageOutcome::Skipped,
             &StageOutcome::Skipped, // clippy skipped → ratio 1.0
             0,
+            &StageOutcome::Skipped,
             &metrics("fn f(){}"),
             &Rubric::default(),
         );
@@ -222,12 +240,40 @@ mod tests {
             &StageOutcome::Skipped,
             &failed(), // clippy failed → ratio 0.0
             0,
+            &StageOutcome::Skipped,
             &metrics("fn f(){}"),
             &Rubric::default(),
         );
         // clippy failed → clippy_sec = 0, unsafe clean → unsafe_ratio = 1.0
         // security = rubric.security * (1.0*0.5 + 0.0*0.5) = rubric.security * 0.5
         assert!((clippy_fail.security - clean.security * 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn wasm_pass_awards_resource_usage() {
+        let r = Rubric::default();
+        let with_wasm = axes_without_performance(
+            &passed(1),
+            &passed(1),
+            &StageOutcome::Skipped,
+            &StageOutcome::Skipped,
+            0,
+            &passed(1), // wasm passed
+            &metrics("fn f(){}"),
+            &r,
+        );
+        let no_wasm = axes_without_performance(
+            &passed(1),
+            &passed(1),
+            &StageOutcome::Skipped,
+            &StageOutcome::Skipped,
+            0,
+            &StageOutcome::Skipped, // wasm not run
+            &metrics("fn f(){}"),
+            &r,
+        );
+        assert_eq!(with_wasm.resource_usage, r.resource_usage);
+        assert_eq!(no_wasm.resource_usage, 0.0);
     }
 
     #[test]
@@ -240,6 +286,8 @@ mod tests {
             clippy: StageOutcome::Skipped,
             clippy_warnings: 0,
             prop_test: StageOutcome::Skipped,
+            wasm: StageOutcome::Skipped,
+            wasm_fuel_used: None,
             axes: AxisScores::default(),
             score: 0.0,
         };
@@ -260,6 +308,8 @@ mod tests {
             clippy: StageOutcome::Skipped,
             clippy_warnings: 0,
             prop_test: StageOutcome::Skipped,
+            wasm: StageOutcome::Skipped,
+            wasm_fuel_used: None,
             axes: AxisScores::default(),
             score: 0.0,
         }];
@@ -276,6 +326,8 @@ mod tests {
             clippy: StageOutcome::Skipped,
             clippy_warnings: 0,
             prop_test: StageOutcome::Skipped,
+            wasm: StageOutcome::Skipped,
+            wasm_fuel_used: None,
             axes: AxisScores::default(),
             score: s,
         };

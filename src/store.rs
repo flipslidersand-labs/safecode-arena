@@ -171,6 +171,8 @@ mod tests {
             clippy: StageOutcome::Skipped,
             clippy_warnings: 0,
             prop_test: StageOutcome::Skipped,
+            wasm: StageOutcome::Skipped,
+            wasm_fuel_used: None,
             axes: AxisScores::default(),
             score,
         }

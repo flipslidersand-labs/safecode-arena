@@ -80,6 +80,10 @@ pub struct Evaluation {
     pub clippy_warnings: usize,
     /// property test の実行結果。--prop-tests 指定時のみ実行。
     pub prop_test: StageOutcome,
+    /// Wasm サンドボックス実行の結果。--wasm-entry 指定時のみ実行。
+    pub wasm: StageOutcome,
+    /// Wasm 実行で消費した fuel（命令数）。実行しなかった場合は None。
+    pub wasm_fuel_used: Option<u64>,
     /// 軸別の獲得点。
     pub axes: AxisScores,
     /// 0.0〜100.0 の総合スコア（= axes.total()）。

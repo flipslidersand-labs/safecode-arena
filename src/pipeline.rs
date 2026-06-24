@@ -4,12 +4,33 @@
 use crate::analysis::{count_clippy_warnings, SourceMetrics};
 use crate::config::Rubric;
 use crate::model::{Candidate, Evaluation, Language, StageOutcome};
-use crate::{runner, scoring};
+use crate::{runner, scoring, wasm};
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
+
+/// Wasm ステージのターゲット。
+const WASM_TARGET: &str = "wasm32-wasip1";
+
+/// Wasm 実行のオプション。`entry` 指定時のみ Wasm ステージを実行する。
+#[derive(Debug, Clone, Copy)]
+pub struct WasmOptions<'a> {
+    pub entry: Option<&'a str>,
+    pub fuel: u64,
+    pub max_memory_bytes: usize,
+}
+
+impl Default for WasmOptions<'_> {
+    fn default() -> Self {
+        WasmOptions {
+            entry: None,
+            fuel: 100_000_000,
+            max_memory_bytes: 64 * 1024 * 1024,
+        }
+    }
+}
 
 /// 一時プロジェクトの Cargo.toml。依存なしの最小構成。
 const CARGO_TOML_TEMPLATE: &str = r#"[package]
@@ -68,18 +89,78 @@ fn copy_tests(src_dir: &Path, dest_tests: &Path) -> Result<()> {
     Ok(())
 }
 
-/// 1 候補を一時 Cargo プロジェクトへ展開し、compile → test → clippy → prop_test → 採点する。
+/// エントリ名が Rust の単純な識別子か検証する（ハーネスへの注入防止）。
+fn is_valid_entry(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .enumerate()
+            .all(|(i, c)| c == '_' || if i == 0 { c.is_alphabetic() } else { c.is_alphanumeric() })
+}
+
+/// Wasm ステージ: 候補を `wasm32-wasip1` にビルドし、生成ハーネスの
+/// エントリ関数を fuel/メモリ制限付き wasmtime で実行する。
+/// 返り値は `(StageOutcome, 消費 fuel)`。
+fn run_wasm_stage(
+    root: &Path,
+    entry: &str,
+    timeout: Duration,
+    opts: &WasmOptions,
+) -> (StageOutcome, Option<u64>) {
+    if !is_valid_entry(entry) {
+        return (
+            StageOutcome::Failed {
+                detail: format!("不正なエントリ名: {entry}"),
+            },
+            None,
+        );
+    }
+
+    // 生成ハーネス（cargo が src/main.rs を bin "candidate" として検出）。
+    let harness = format!("fn main() {{ candidate::{entry}(); }}\n");
+    if let Err(e) = fs::write(root.join("src").join("main.rs"), harness) {
+        return (
+            StageOutcome::Failed {
+                detail: format!("ハーネス書込失敗: {e}"),
+            },
+            None,
+        );
+    }
+
+    // wasm ビルド
+    let mut build = Command::new("cargo");
+    build
+        .args(["build", "--target", WASM_TARGET, "--release"])
+        .current_dir(root);
+    let build_outcome = runner::run_stage("wasm-build", build, timeout);
+    if !build_outcome.is_passed() {
+        return (build_outcome, None);
+    }
+
+    // wasm 実行
+    let artifact = root
+        .join("target")
+        .join(WASM_TARGET)
+        .join("release")
+        .join("candidate.wasm");
+    let wo = wasm::run_wasm(&artifact, opts.fuel, opts.max_memory_bytes);
+    (wo.outcome, wo.fuel_used)
+}
+
+/// 1 候補を一時 Cargo プロジェクトへ展開し、compile → test → clippy → prop_test → wasm → 採点する。
 ///
-/// - compile が通らなかった場合、test / clippy / prop_test はすべて `Skipped`。
+/// - compile が通らなかった場合、test / clippy / prop_test / wasm はすべて `Skipped`。
 /// - `tests_dir`: 統合テスト `.rs` を置いたディレクトリ（任意）。
 /// - `prop_tests_dir`: proptest ファイルを置いたディレクトリ（任意）。指定時は
 ///   proptest を dev-dependency に追加して実行する。
+/// - `wasm`: Wasm サンドボックス実行のオプション。`entry` 指定時のみ実行。
 pub fn evaluate_candidate(
     candidate: &Candidate,
     timeout: Duration,
     rubric: &Rubric,
     tests_dir: Option<&Path>,
     prop_tests_dir: Option<&Path>,
+    wasm_opts: &WasmOptions,
 ) -> Result<Evaluation> {
     let dir = tempfile::tempdir().context("一時ディレクトリの生成に失敗")?;
     let root = dir.path();
@@ -139,6 +220,12 @@ pub fn evaluate_candidate(
         StageOutcome::Skipped
     };
 
+    // Wasm サンドボックス（--wasm-entry 指定 + compile 成功時のみ）
+    let (wasm_stage, wasm_fuel_used) = match (compile.is_passed(), wasm_opts.entry) {
+        (true, Some(entry)) => run_wasm_stage(root, entry, timeout, wasm_opts),
+        _ => (StageOutcome::Skipped, None),
+    };
+
     let metrics = SourceMetrics::analyze(&candidate.source);
     let axes = scoring::axes_without_performance(
         &compile,
@@ -146,6 +233,7 @@ pub fn evaluate_candidate(
         &prop_test,
         &clippy,
         clippy_warnings,
+        &wasm_stage,
         &metrics,
         rubric,
     );
@@ -157,6 +245,8 @@ pub fn evaluate_candidate(
         clippy,
         clippy_warnings,
         prop_test,
+        wasm: wasm_stage,
+        wasm_fuel_used,
         axes,
         score,
     })

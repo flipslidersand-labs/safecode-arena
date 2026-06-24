@@ -25,6 +25,7 @@ struct Cli {
 enum Format {
     Markdown,
     Json,
+    Html,
 }
 
 #[derive(Subcommand)]
@@ -58,6 +59,16 @@ enum Command {
         /// リグレッションと判定するスコア下落の下限。
         #[arg(long, default_value_t = 1.0)]
         regression_threshold: f64,
+        /// Wasm サンドボックスで実行する候補のエントリ関数名（no-arg pub fn）。
+        /// 指定すると wasm32-wasip1 にビルドして隔離実行する。
+        #[arg(long)]
+        wasm_entry: Option<String>,
+        /// Wasm 実行の fuel 上限（命令数）。
+        #[arg(long, default_value_t = 100_000_000)]
+        wasm_fuel: u64,
+        /// Wasm 実行のメモリ上限（MB）。
+        #[arg(long, default_value_t = 64)]
+        wasm_max_memory_mb: usize,
     },
     /// 保存済みの run 履歴を一覧表示する。
     History {
@@ -80,7 +91,10 @@ fn main() -> anyhow::Result<()> {
             config,
             db,
             regression_threshold,
-        } => run_evaluate(
+            wasm_entry,
+            wasm_fuel,
+            wasm_max_memory_mb,
+        } => run_evaluate(EvaluateArgs {
             candidates,
             tests,
             prop_tests,
@@ -90,13 +104,16 @@ fn main() -> anyhow::Result<()> {
             config,
             db,
             regression_threshold,
-        ),
+            wasm_entry,
+            wasm_fuel,
+            wasm_max_memory_mb,
+        }),
         Command::History { db } => run_history(&db),
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn run_evaluate(
+/// `evaluate` サブコマンドの引数一式。
+struct EvaluateArgs {
     candidates: Vec<String>,
     tests: Option<String>,
     prop_tests: Option<String>,
@@ -106,17 +123,27 @@ fn run_evaluate(
     config: Option<String>,
     db: Option<String>,
     regression_threshold: f64,
-) -> anyhow::Result<()> {
-    if candidates.is_empty() {
+    wasm_entry: Option<String>,
+    wasm_fuel: u64,
+    wasm_max_memory_mb: usize,
+}
+
+fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
+    if args.candidates.is_empty() {
         anyhow::bail!("候補ファイルを 1 つ以上指定してください");
     }
-    let timeout = Duration::from_secs(timeout_secs);
-    let rubric = Rubric::load(config.as_deref())?;
-    let tests_dir = tests.as_deref().map(Path::new);
-    let prop_tests_dir = prop_tests.as_deref().map(Path::new);
+    let timeout = Duration::from_secs(args.timeout_secs);
+    let rubric = Rubric::load(args.config.as_deref())?;
+    let tests_dir = args.tests.as_deref().map(Path::new);
+    let prop_tests_dir = args.prop_tests.as_deref().map(Path::new);
+    let wasm_opts = pipeline::WasmOptions {
+        entry: args.wasm_entry.as_deref(),
+        fuel: args.wasm_fuel,
+        max_memory_bytes: args.wasm_max_memory_mb * 1024 * 1024,
+    };
 
-    let mut evals = Vec::with_capacity(candidates.len());
-    for path in &candidates {
+    let mut evals = Vec::with_capacity(args.candidates.len());
+    for path in &args.candidates {
         let candidate = pipeline::load_candidate(Path::new(path))?;
         eprintln!("評価中: {} ...", candidate.id);
         evals.push(pipeline::evaluate_candidate(
@@ -125,6 +152,7 @@ fn run_evaluate(
             &rubric,
             tests_dir,
             prop_tests_dir,
+            &wasm_opts,
         )?);
     }
 
@@ -132,15 +160,16 @@ fn run_evaluate(
     let ranked = scoring::rank(evals);
 
     // 永続化 + リグレッション検出
-    if let Some(db_path) = db.as_deref() {
-        persist_and_report_regressions(db_path, &ranked, regression_threshold)?;
+    if let Some(db_path) = args.db.as_deref() {
+        persist_and_report_regressions(db_path, &ranked, args.regression_threshold)?;
     }
 
-    let rendered = match format {
+    let rendered = match args.format {
         Format::Markdown => report::render(&ranked),
         Format::Json => serde_json::to_string_pretty(&ranked)?,
+        Format::Html => report::render_html(&ranked),
     };
-    match out {
+    match args.out {
         Some(path) => {
             std::fs::write(&path, rendered)?;
             eprintln!("レポートを書き出しました: {path}");

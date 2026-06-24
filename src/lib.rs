@@ -17,5 +17,6 @@ pub mod report;
 pub mod runner;
 pub mod scoring;
 pub mod store;
+pub mod wasm;
 
 pub use model::{Candidate, Evaluation, Language, StageOutcome};
