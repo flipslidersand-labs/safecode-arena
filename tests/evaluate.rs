@@ -149,3 +149,19 @@ fn db_persists_runs_and_detects_regression() {
         .stdout(predicate::str::contains("#1"))
         .stdout(predicate::str::contains("#2"));
 }
+
+#[test]
+fn wasm_entry_runs_sandbox_and_awards_resource_usage() {
+    // wasm32-wasip1 にビルドして隔離実行できる候補。
+    let cand = write_candidate("ok", "pub fn run() {}\n");
+
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .args(["evaluate", "--format", "json", "--wasm-entry", "run"])
+        .arg(cand.path())
+        .assert()
+        .success()
+        // Wasm ステージが Passed し、resource_usage が満点(5.0)になる。
+        .stdout(predicate::str::contains("\"wasm\""))
+        .stdout(predicate::str::contains("\"resource_usage\": 5.0"));
+}

@@ -92,13 +92,15 @@ fn run_bytes(bytes: &[u8], fuel: u64, max_memory_bytes: usize) -> WasmOutcome {
         Ok(()) => StageOutcome::Passed {
             duration_ms: elapsed_ms,
         },
-        Err(e) => classify_error(&anyhow::anyhow!("{e:#}"), elapsed_ms),
+        // 元の wasmtime エラーをそのまま渡す（re-wrap すると downcast 情報が失われる）。
+        Err(e) => classify_error(&e, elapsed_ms),
     };
     WasmOutcome { outcome, fuel_used }
 }
 
 /// 実行エラーを分類する。WASI の正常 exit(0) は成功、fuel 枯渇はタイムアウト扱い。
-fn classify_error(e: &anyhow::Error, elapsed_ms: u64) -> StageOutcome {
+fn classify_error(e: &wasmtime::Error, elapsed_ms: u64) -> StageOutcome {
+    // 正常終了 exit(0)（WASI command は proc_exit でトラップする）。
     if let Some(exit) = e.downcast_ref::<I32Exit>() {
         return if exit.0 == 0 {
             StageOutcome::Passed {
@@ -110,19 +112,22 @@ fn classify_error(e: &anyhow::Error, elapsed_ms: u64) -> StageOutcome {
             }
         };
     }
-    if let Some(trap) = e.downcast_ref::<Trap>() {
-        if *trap == Trap::OutOfFuel {
-            // fuel 上限超過。limit_ms には経過 ms を入れる（fuel 値は別途 fuel_used で持つ）。
-            return StageOutcome::TimedOut {
-                limit_ms: elapsed_ms,
-            };
-        }
-        return StageOutcome::Failed {
-            detail: format!("trap: {trap}"),
+    // fuel 枯渇。downcast に加え、backtrace 付きでラップされた場合に備えて
+    // メッセージ文字列でもフォールバック判定する。
+    let is_out_of_fuel = e.downcast_ref::<Trap>() == Some(&Trap::OutOfFuel)
+        || format!("{e:#}").contains("fuel consumed");
+    if is_out_of_fuel {
+        // limit_ms には経過 ms を入れる（消費 fuel は別途 fuel_used で持つ）。
+        return StageOutcome::TimedOut {
+            limit_ms: elapsed_ms,
         };
     }
     StageOutcome::Failed {
-        detail: e.to_string(),
+        detail: format!("{e:#}")
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_string(),
     }
 }
 

@@ -28,17 +28,20 @@ safecode evaluate candidate.rs --format json --config safecode.toml
 # 結果を DB に保存（過去 run と比較してリグレッション検出）
 safecode evaluate candidate.rs --db history.db
 safecode history --db history.db
+
+# Wasm サンドボックスで隔離実行（候補に pub fn run() が必要）
+safecode evaluate candidate.rs --wasm-entry run --wasm-fuel 100000000
 ```
 
 ## 採点ルーブリック
 
-| 軸              | 重み | 算出                                       |
-| --------------- | ---- | ------------------------------------------ |
-| correctness     | 50   | compile 40% + test 40% + property test 20% |
-| security        | 20   | unsafe ヒューリスティック 50% + clippy 50% |
-| performance     | 15   | 候補間 compile+test 時間の相対比較         |
-| maintainability | 10   | 関数長ヒューリスティック 60% + clippy 40%  |
-| resource_usage  | 5    | 未計測（Phase 4 以降）                     |
+| 軸              | 重み | 算出                                           |
+| --------------- | ---- | ---------------------------------------------- |
+| correctness     | 50   | compile 40% + test 40% + property test 20%     |
+| security        | 20   | unsafe ヒューリスティック 50% + clippy 50%     |
+| performance     | 15   | 候補間 compile+test 時間の相対比較             |
+| maintainability | 10   | 関数長ヒューリスティック 60% + clippy 40%      |
+| resource_usage  | 5    | Wasm サンドボックス（wasm32-wasip1）実行の成否 |
 
 重みは `safecode.toml` の `[weights]` で上書きできる。
 
@@ -61,7 +64,7 @@ cargo fmt
 
 ## ステータス
 
-✅ Phase 3 完了（多軸採点: correctness/security/performance/maintainability を実測。clippy ステージ + property test 対応）。次は Phase 4（Wasm サンドボックス・SQLite 永続化）。進捗は GitHub Issue #1「全体スケジュール」を参照。
+✅ Phase 4 完了（SQLite 永続化 + リグレッション検出 + `history`、Wasmtime/WASI による Wasm サンドボックス実行で resource_usage を実測）。5 軸すべて実測。次は発展（多言語対応・Tree-sitter・Mutation Testing 等）。進捗は GitHub Issue #1「全体スケジュール」を参照。
 
 ## ライセンス
 

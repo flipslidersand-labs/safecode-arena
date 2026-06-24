@@ -2,6 +2,9 @@
 
 use crate::model::{Evaluation, StageOutcome};
 
+/// 軸スコアを取り出す関数の型（HTML レポートの軸テーブル用）。
+type AxisGetter = fn(&Evaluation) -> f64;
+
 // ── 共通ヘルパー ──────────────────────────────────────────────────────────────
 
 fn stage_cell(o: &StageOutcome) -> String {
@@ -135,7 +138,11 @@ fn render_candidate_details(out: &mut String, evals: &[Evaluation]) {
             e.axes.resource_usage,
         ];
         for ((name, limit), score) in RUBRIC.iter().zip(axis_scores.iter()) {
-            let pct = if *limit > 0.0 { score / limit * 100.0 } else { 0.0 };
+            let pct = if *limit > 0.0 {
+                score / limit * 100.0
+            } else {
+                0.0
+            };
             out.push_str(&format!(
                 "| {name} | {score:.1} | {limit:.0} | {pct:.0}% |\n"
             ));
@@ -242,10 +249,25 @@ fn render_comparison(out: &mut String, evals: &[Evaluation]) {
 
     // Axis scores
     for (axis, scores) in [
-        ("正誤スコア", evals.iter().map(|e| e.axes.correctness).collect::<Vec<_>>()),
-        ("安全スコア", evals.iter().map(|e| e.axes.security).collect::<Vec<_>>()),
-        ("性能スコア", evals.iter().map(|e| e.axes.performance).collect::<Vec<_>>()),
-        ("保守スコア", evals.iter().map(|e| e.axes.maintainability).collect::<Vec<_>>()),
+        (
+            "正誤スコア",
+            evals.iter().map(|e| e.axes.correctness).collect::<Vec<_>>(),
+        ),
+        (
+            "安全スコア",
+            evals.iter().map(|e| e.axes.security).collect::<Vec<_>>(),
+        ),
+        (
+            "性能スコア",
+            evals.iter().map(|e| e.axes.performance).collect::<Vec<_>>(),
+        ),
+        (
+            "保守スコア",
+            evals
+                .iter()
+                .map(|e| e.axes.maintainability)
+                .collect::<Vec<_>>(),
+        ),
     ] {
         let max = scores.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
         out.push_str(&format!("| {axis} |"));
@@ -302,7 +324,13 @@ pub fn render_html(evals: &[Evaluation]) -> String {
     body.push_str("<h2>スコア可視化</h2>\n");
     for e in evals {
         let pct = e.score.min(100.0);
-        let color = if pct >= 70.0 { "#4caf50" } else if pct >= 40.0 { "#ff9800" } else { "#f44336" };
+        let color = if pct >= 70.0 {
+            "#4caf50"
+        } else if pct >= 40.0 {
+            "#ff9800"
+        } else {
+            "#f44336"
+        };
         body.push_str(&format!(
             "<div class=\"bar-row\"><span class=\"bar-label\"><code>{}</code></span><div class=\"bar-wrap\"><div class=\"bar\" style=\"width:{pct:.1}%;background:{color}\"></div></div><span class=\"bar-score\">{:.1}</span></div>\n",
             e.candidate_id, e.score
@@ -311,12 +339,12 @@ pub fn render_html(evals: &[Evaluation]) -> String {
 
     // Per-candidate details
     body.push_str("<h2>候補詳細</h2>\n");
-    const AXES: &[(&str, fn(&Evaluation) -> f64, f64)] = &[
-        ("correctness",    |e| e.axes.correctness,    50.0),
-        ("security",       |e| e.axes.security,       20.0),
-        ("performance",    |e| e.axes.performance,    15.0),
-        ("maintainability",|e| e.axes.maintainability,10.0),
-        ("resource_usage", |e| e.axes.resource_usage,  5.0),
+    const AXES: &[(&str, AxisGetter, f64)] = &[
+        ("correctness", |e| e.axes.correctness, 50.0),
+        ("security", |e| e.axes.security, 20.0),
+        ("performance", |e| e.axes.performance, 15.0),
+        ("maintainability", |e| e.axes.maintainability, 10.0),
+        ("resource_usage", |e| e.axes.resource_usage, 5.0),
     ];
     for (i, e) in evals.iter().enumerate() {
         body.push_str(&format!(
@@ -326,14 +354,27 @@ pub fn render_html(evals: &[Evaluation]) -> String {
         body.push_str("<table>\n<tr><th>軸</th><th>スコア</th><th>上限</th><th>達成率</th></tr>\n");
         for (name, get, limit) in AXES {
             let score = get(e);
-            let pct = if *limit > 0.0 { score / limit * 100.0 } else { 0.0 };
+            let pct = if *limit > 0.0 {
+                score / limit * 100.0
+            } else {
+                0.0
+            };
             body.push_str(&format!("<tr><td>{name}</td><td>{score:.1}</td><td>{limit:.0}</td><td>{pct:.0}%</td></tr>\n"));
         }
         body.push_str("</table>\n<ul>\n");
-        body.push_str(&format!("<li>コンパイル: {}</li>\n", stage_cell(&e.compile)));
+        body.push_str(&format!(
+            "<li>コンパイル: {}</li>\n",
+            stage_cell(&e.compile)
+        ));
         body.push_str(&format!("<li>テスト: {}</li>\n", stage_cell(&e.test)));
-        body.push_str(&format!("<li>Clippy: {}</li>\n", clippy_cell(&e.clippy, e.clippy_warnings)));
-        body.push_str(&format!("<li>PropTest: {}</li>\n", stage_cell(&e.prop_test)));
+        body.push_str(&format!(
+            "<li>Clippy: {}</li>\n",
+            clippy_cell(&e.clippy, e.clippy_warnings)
+        ));
+        body.push_str(&format!(
+            "<li>PropTest: {}</li>\n",
+            stage_cell(&e.prop_test)
+        ));
         if !matches!(e.wasm, StageOutcome::Skipped) {
             body.push_str(&format!("<li>Wasm: {}</li>\n", stage_cell(&e.wasm)));
         }

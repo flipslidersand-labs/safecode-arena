@@ -92,10 +92,14 @@ fn copy_tests(src_dir: &Path, dest_tests: &Path) -> Result<()> {
 /// エントリ名が Rust の単純な識別子か検証する（ハーネスへの注入防止）。
 fn is_valid_entry(name: &str) -> bool {
     !name.is_empty()
-        && name
-            .chars()
-            .enumerate()
-            .all(|(i, c)| c == '_' || if i == 0 { c.is_alphabetic() } else { c.is_alphanumeric() })
+        && name.chars().enumerate().all(|(i, c)| {
+            c == '_'
+                || if i == 0 {
+                    c.is_alphabetic()
+                } else {
+                    c.is_alphanumeric()
+                }
+        })
 }
 
 /// Wasm ステージ: 候補を `wasm32-wasip1` にビルドし、生成ハーネスの

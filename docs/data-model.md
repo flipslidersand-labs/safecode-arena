@@ -36,6 +36,8 @@ struct Evaluation {
     clippy: StageOutcome,      // compile 成功時のみ実行
     clippy_warnings: usize,    // clippy が報告した warning 数
     prop_test: StageOutcome,   // --prop-tests 指定時のみ実行
+    wasm: StageOutcome,        // --wasm-entry 指定時のみ実行（wasm32-wasip1 隔離実行）
+    wasm_fuel_used: Option<u64>, // Wasm 実行で消費した fuel（命令数）
     axes: AxisScores,          // 軸別の獲得点
     score: f64,                // = axes.total()（0.0〜100.0）
 }
@@ -86,7 +88,7 @@ correctness     50   ← compile 40% + test 40% + prop_test 20%
 security        20   ← unsafe ヒューリスティック 50% + clippy 50%
 performance     15   ← 候補間 compile+test 時間の相対比較（最速=満点）
 maintainability 10   ← 関数長ヒューリスティック 60% + clippy 40%
-resource_usage   5   ← 未計測（0）。Phase 4 以降
+resource_usage   5   ← Wasm サンドボックス実行が成功で満点、失敗/未実行で 0
 合計            100
 ```
 
