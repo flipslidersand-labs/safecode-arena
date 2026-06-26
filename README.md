@@ -31,7 +31,18 @@ safecode history --db history.db
 
 # Wasm サンドボックスで隔離実行（候補に pub fn run() が必要）
 safecode evaluate candidate.rs --wasm-entry run --wasm-fuel 100000000
+
+# Python 候補も評価可能（拡張子で自動判定）。Rust と混在比較もできる
+safecode evaluate solution.py --tests py_tests/
+safecode evaluate cand.rs cand.py    # 言語横断で 1 回比較
 ```
+
+### 対応言語
+
+| 言語   | compile       | test         | lint     | wasm             |
+| ------ | ------------- | ------------ | -------- | ---------------- |
+| Rust   | `cargo build` | `cargo test` | `clippy` | ✅ wasm32-wasip1 |
+| Python | `py_compile`  | `pytest`     | `ruff`   | —                |
 
 ## 採点ルーブリック
 
@@ -64,7 +75,7 @@ cargo fmt
 
 ## ステータス
 
-✅ Phase 4 完了（SQLite 永続化 + リグレッション検出 + `history`、Wasmtime/WASI による Wasm サンドボックス実行で resource_usage を実測）。5 軸すべて実測。次は発展（多言語対応・Tree-sitter・Mutation Testing 等）。進捗は GitHub Issue #1「全体スケジュール」を参照。
+✅ Phase 1〜4 完了（5 軸すべて実測 / SQLite 永続化 + リグレッション検出 / Wasm サンドボックス）。Phase 5 で **Python 対応**（py_compile / pytest / ruff、Rust と混在比較可）。次は Go/JS 対応・Mutation Testing 等。進捗は GitHub Issue #1「全体スケジュール」を参照。
 
 ## ライセンス
 

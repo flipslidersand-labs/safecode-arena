@@ -56,7 +56,7 @@ Fuzzing
 
 ### やらないこと（MVP では対象外）
 
-- Python / Go / JavaScript 対応（発展）
+- Go / JavaScript 対応（発展。Python は対応済み）
 - Wasmtime/WASI による完全サンドボックス（MVP はプロセス隔離）
 - Property-based Test / Fuzzing の自動実行（発展）
 - Mutation / Differential Testing（発展）

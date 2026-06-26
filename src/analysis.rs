@@ -20,7 +20,10 @@ pub struct SourceMetrics {
 impl SourceMetrics {
     pub fn analyze(source: &str) -> Self {
         let unsafe_count = source.matches("unsafe").count();
-        let fn_count = source.matches("fn ").count();
+        // 関数定義の近似（言語横断: Rust "fn ", Python "def ", JS "function "）。
+        let fn_count = source.matches("fn ").count()
+            + source.matches("def ").count()
+            + source.matches("function ").count();
         let loc = source.lines().filter(|l| !l.trim().is_empty()).count();
         let max_line_len = source.lines().map(|l| l.chars().count()).max().unwrap_or(0);
         SourceMetrics {
@@ -58,6 +61,32 @@ pub fn count_clippy_warnings(stderr: &str) -> usize {
             l.starts_with("warning:")
                 && !l.contains("warnings emitted")
                 && !l.contains("warning emitted")
+        })
+        .count()
+}
+
+/// ruff (`--output-format=concise`) の出力から指摘件数を数える。
+///
+/// 末尾の "Found N errors." サマリを優先し、無ければ `path:line:col:` 形式の
+/// 診断行（`.py:` を含む行）を数える。
+pub fn count_ruff_findings(output: &str) -> usize {
+    for line in output.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("Found ") {
+            if let Some(n) = rest.split_whitespace().next() {
+                if let Ok(count) = n.parse::<usize>() {
+                    return count;
+                }
+            }
+        }
+    }
+    output
+        .lines()
+        .filter(|l| {
+            l.contains(".py:")
+                && l.split(':')
+                    .nth(1)
+                    .is_some_and(|s| s.trim().parse::<u32>().is_ok())
         })
         .count()
 }
@@ -103,5 +132,25 @@ mod tests {
         src.push_str("}\n");
         let m = SourceMetrics::analyze(&src);
         assert!(m.maintainability_ratio() < 1.0);
+    }
+
+    #[test]
+    fn python_def_counts_as_function() {
+        // Python の def も関数としてカウントされ、保守性が満点になる。
+        let m = SourceMetrics::analyze("def add(a, b):\n    return a + b\n");
+        assert_eq!(m.fn_count, 1);
+        assert_eq!(m.maintainability_ratio(), 1.0);
+    }
+
+    #[test]
+    fn count_ruff_findings_uses_summary() {
+        let out = "candidate.py:1:8: F401 [*] `os` imported but unused\nFound 1 error.\n";
+        assert_eq!(count_ruff_findings(out), 1);
+    }
+
+    #[test]
+    fn count_ruff_findings_zero_when_clean() {
+        assert_eq!(count_ruff_findings("All checks passed!\n"), 0);
+        assert_eq!(count_ruff_findings(""), 0);
     }
 }

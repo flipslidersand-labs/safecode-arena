@@ -150,6 +150,48 @@ fn db_persists_runs_and_detects_regression() {
         .stdout(predicate::str::contains("#2"));
 }
 
+fn write_py(name: &str, source: &str) -> tempfile::NamedTempFile {
+    let mut f = tempfile::Builder::new()
+        .prefix(name)
+        .suffix(".py")
+        .tempfile()
+        .unwrap();
+    f.write_all(source.as_bytes()).unwrap();
+    f.flush().unwrap();
+    f
+}
+
+#[test]
+fn python_clean_candidate_scores() {
+    // 構文 OK・ruff 指摘なし・テストなし(=成功扱い)。
+    // correctness 40 + security 20 + maintainability 10 + performance 15 = 85.0
+    let cand = write_py("ok", "def add(a, b):\n    return a + b\n");
+
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(cand.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("85.0"))
+        .stdout(predicate::str::contains("✅"));
+}
+
+#[test]
+fn python_syntax_error_fails_compile() {
+    // コロン欠落 → py_compile 失敗。
+    let cand = write_py("ng", "def add(a, b)\n    return a + b\n");
+
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(cand.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("❌"))
+        .stdout(predicate::str::contains("0.0"));
+}
+
 #[test]
 fn wasm_entry_runs_sandbox_and_awards_resource_usage() {
     // wasm32-wasip1 にビルドして隔離実行できる候補。

@@ -6,10 +6,11 @@
 
 ### `Language`
 
-検証対象の言語。MVP は `Rust` のみ。
+検証対象の言語。`Rust`（`.rs`）と `Python`（`.py`）に対応。
 
 ```rust
-enum Language { Rust /* 発展: Python, Go, JavaScript */ }
+enum Language { Rust, Python /* 発展: Go, JavaScript */ }
+// from_extension(".py") → Python, それ以外 → Rust
 ```
 
 ### `Candidate`

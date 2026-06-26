@@ -33,12 +33,15 @@
 | `assert_cmd` | CLI の E2E テスト |
 | `predicates` | 出力アサーション  |
 
-## Phase 3 で利用（候補プロジェクト側のツール）
+## 候補側のツール（言語別）
 
-| ツール         | 用途                                        | 備考                                           |
-| -------------- | ------------------------------------------- | ---------------------------------------------- |
-| `cargo clippy` | security / maintainability の lint シグナル | Rust ツールチェーン同梱。clippy ステージで実行 |
-| `proptest`     | property test（`--prop-tests` 指定時）      | 候補の一時プロジェクトに dev-dependency 追加   |
+| 言語   | ツール                   | 用途                                            |
+| ------ | ------------------------ | ----------------------------------------------- |
+| Rust   | `cargo` / `cargo clippy` | compile / test / lint（security・保守シグナル） |
+| Rust   | `proptest`               | property test（`--prop-tests` 指定時）          |
+| Python | `python3 -m py_compile`  | compile（構文チェック）                         |
+| Python | `pytest`                 | test（`test_*.py` を収集）                      |
+| Python | `ruff`                   | lint（security・保守シグナル）                  |
 
 ## 発展フェーズで追加予定（未使用）
 

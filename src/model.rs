@@ -2,12 +2,30 @@
 
 use serde::{Deserialize, Serialize};
 
-/// 検証対象の言語。MVP では Rust のみ。
+/// 検証対象の言語。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Language {
     Rust,
-    // 発展: Python, Go, JavaScript
+    Python,
+    // 発展: Go, JavaScript
+}
+
+impl Language {
+    /// ファイル拡張子から言語を判定する。未知の拡張子は Rust 既定。
+    pub fn from_extension(ext: &str) -> Language {
+        match ext.to_ascii_lowercase().as_str() {
+            "py" => Language::Python,
+            _ => Language::Rust,
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Language::Rust => "rust",
+            Language::Python => "python",
+        }
+    }
 }
 
 /// 1 つの AI 生成コード候補。
