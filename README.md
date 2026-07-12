@@ -1,62 +1,64 @@
 # SafeCode Arena
 
-AI が生成した複数のコード候補を、**安全な隔離環境で自動検証し、採点して採用候補を決める**検証ランナー。
+[日本語版 README](README.ja.md)
 
-> プロジェクトの主役はコード生成ではなく、「生成物を信用可能な状態へ持っていく検証処理系」。
+A verification runner that takes multiple AI-generated code candidates, **evaluates them automatically in an isolated sandbox, scores them, and picks the best one to adopt**.
 
-## パイプライン
+> The point of this project is not code generation — it's the verification pipeline that turns generated code into something you can actually trust.
+
+## Pipeline
 
 ```text
-仕様 → 複数コード候補 → コンパイル → テスト → (property/fuzz/性能/静的解析) → 採点 → 採用候補決定
+spec → N code candidates → compile → test → (property/fuzz/perf/static analysis) → score → adoption decision
 ```
 
-## 使い方（MVP 目標）
+## Usage
 
 ```bash
-# 単一候補
+# Evaluate a single candidate
 safecode evaluate candidate.rs --tests tests/
 
-# 複数候補を比較してレポート出力
+# Compare multiple candidates and emit a report
 safecode evaluate cand_a.rs cand_b.rs cand_c.rs --tests tests/ --out report.md
 
-# property test (proptest) も実行
+# Run property tests (proptest) as well
 safecode evaluate candidate.rs --prop-tests prop/
 
-# JSON 出力 / 採点ルーブリックの上書き
+# JSON output / override the scoring rubric
 safecode evaluate candidate.rs --format json --config safecode.toml
 
-# 結果を DB に保存（過去 run と比較してリグレッション検出）
+# Persist results to a DB (regression detection against past runs)
 safecode evaluate candidate.rs --db history.db
 safecode history --db history.db
 
-# Wasm サンドボックスで隔離実行（候補に pub fn run() が必要）
+# Isolated execution in a Wasm sandbox (candidate needs a pub fn run())
 safecode evaluate candidate.rs --wasm-entry run --wasm-fuel 100000000
 
-# Python 候補も評価可能（拡張子で自動判定）。Rust と混在比較もできる
+# Python candidates work too (auto-detected by extension), including mixed-language comparison
 safecode evaluate solution.py --tests py_tests/
-safecode evaluate cand.rs cand.py    # 言語横断で 1 回比較
+safecode evaluate cand.rs cand.py    # cross-language comparison in one run
 ```
 
-### 対応言語
+### Supported languages
 
-| 言語   | compile       | test         | lint     | wasm             |
-| ------ | ------------- | ------------ | -------- | ---------------- |
-| Rust   | `cargo build` | `cargo test` | `clippy` | ✅ wasm32-wasip1 |
-| Python | `py_compile`  | `pytest`     | `ruff`   | —                |
+| Language | compile       | test         | lint     | wasm             |
+| -------- | ------------- | ------------ | -------- | ---------------- |
+| Rust     | `cargo build` | `cargo test` | `clippy` | ✅ wasm32-wasip1 |
+| Python   | `py_compile`  | `pytest`     | `ruff`   | —                |
 
-## 採点ルーブリック
+## Scoring rubric
 
-| 軸              | 重み | 算出                                           |
-| --------------- | ---- | ---------------------------------------------- |
-| correctness     | 50   | compile 40% + test 40% + property test 20%     |
-| security        | 20   | unsafe ヒューリスティック 50% + clippy 50%     |
-| performance     | 15   | 候補間 compile+test 時間の相対比較             |
-| maintainability | 10   | 関数長ヒューリスティック 60% + clippy 40%      |
-| resource_usage  | 5    | Wasm サンドボックス（wasm32-wasip1）実行の成否 |
+| Axis            | Weight | How it's computed                                     |
+| --------------- | ------ | ----------------------------------------------------- |
+| correctness     | 50     | compile 40% + tests 40% + property tests 20%          |
+| security        | 20     | `unsafe` heuristics 50% + clippy 50%                  |
+| performance     | 15     | relative compile+test time across candidates          |
+| maintainability | 10     | function-length heuristics 60% + clippy 40%           |
+| resource_usage  | 5      | pass/fail of sandboxed Wasm (wasm32-wasip1) execution |
 
-重みは `safecode.toml` の `[weights]` で上書きできる。
+Weights can be overridden via `[weights]` in `safecode.toml`.
 
-## 開発
+## Development
 
 ```bash
 cargo build
@@ -65,18 +67,18 @@ cargo clippy -- -D warnings
 cargo fmt
 ```
 
-## ドキュメント
+## Documentation (Japanese)
 
-- [仕様](docs/spec.md)
-- [技術スタック](docs/tech-stack.md)
-- [データモデル](docs/data-model.md)
-- [実装ガイド](docs/implementation-guide.md)
-- [ADR](docs/adr/)
+- [Spec](docs/spec.md)
+- [Tech stack](docs/tech-stack.md)
+- [Data model](docs/data-model.md)
+- [Implementation guide](docs/implementation-guide.md)
+- [ADRs](docs/adr/)
 
-## ステータス
+## Status
 
-✅ Phase 1〜4 完了（5 軸すべて実測 / SQLite 永続化 + リグレッション検出 / Wasm サンドボックス）。Phase 5 で **Python 対応**（py_compile / pytest / ruff、Rust と混在比較可）。次は Go/JS 対応・Mutation Testing 等。進捗は GitHub Issue #1「全体スケジュール」を参照。
+✅ Phases 1–4 complete (all 5 axes measured / SQLite persistence + regression detection / Wasm sandbox). Phase 5 added **Python support** (py_compile / pytest / ruff, mixed comparison with Rust). Next up: Go/JS support, mutation testing. See Issue #1 for the roadmap.
 
-## ライセンス
+## License
 
 MIT
