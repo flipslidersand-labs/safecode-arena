@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 pub enum Language {
     Rust,
     Python,
-    // 発展: Go, JavaScript
+    Go,
+    JavaScript,
 }
 
 impl Language {
@@ -16,6 +17,8 @@ impl Language {
     pub fn from_extension(ext: &str) -> Language {
         match ext.to_ascii_lowercase().as_str() {
             "py" => Language::Python,
+            "go" => Language::Go,
+            "js" => Language::JavaScript,
             _ => Language::Rust,
         }
     }
@@ -24,6 +27,8 @@ impl Language {
         match self {
             Language::Rust => "rust",
             Language::Python => "python",
+            Language::Go => "go",
+            Language::JavaScript => "javascript",
         }
     }
 }

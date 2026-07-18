@@ -91,6 +91,20 @@ pub fn count_ruff_findings(output: &str) -> usize {
         .count()
 }
 
+/// `go vet` の出力から指摘件数を数える。
+///
+/// go vet は問題を `path/to/file.go:line:col: message` 形式で stderr に出力する。
+/// 末尾の `# module` や空行を除いた診断行数を返す。
+pub fn count_go_vet_findings(stderr: &str) -> usize {
+    stderr
+        .lines()
+        .filter(|l| {
+            let t = l.trim();
+            !t.is_empty() && !t.starts_with('#') && t.contains(".go:")
+        })
+        .count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

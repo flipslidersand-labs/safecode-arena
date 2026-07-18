@@ -1,7 +1,7 @@
 //! 検証パイプライン駆動。候補を一時 Cargo プロジェクトへ展開し、
 //! compile → test → 採点 までを実行する。
 
-use crate::analysis::{count_lint_warnings, count_ruff_findings, SourceMetrics};
+use crate::analysis::{count_go_vet_findings, count_lint_warnings, count_ruff_findings, SourceMetrics};
 use crate::config::Rubric;
 use crate::model::{Candidate, Evaluation, Language, StageOutcome};
 use crate::{runner, scoring, wasm};
@@ -211,6 +211,8 @@ pub fn evaluate_candidate(
             wasm_opts,
         )?,
         Language::Python => run_python_stages(root, candidate, timeout, tests_dir)?,
+        Language::Go => run_go_stages(root, candidate, timeout, tests_dir)?,
+        Language::JavaScript => run_js_stages(root, candidate, timeout, tests_dir)?,
     };
 
     Ok(assemble(candidate, results, rubric))
@@ -352,6 +354,96 @@ fn run_python_stages(
         test,
         lint,
         lint_warnings,
+        prop_test: StageOutcome::Skipped,
+        wasm: StageOutcome::Skipped,
+        wasm_fuel_used: None,
+    })
+}
+
+/// Go 候補: 一時モジュールで go build → go test → go vet。
+/// prop_test / wasm は非対応のため Skipped。
+fn run_go_stages(
+    root: &Path,
+    candidate: &Candidate,
+    timeout: Duration,
+    tests_dir: Option<&Path>,
+) -> Result<StageResults> {
+    // go.mod を生成（依存なしの最小モジュール）
+    let go_mod = "module candidate\n\ngo 1.22\n";
+    fs::write(root.join("go.mod"), go_mod).context("go.mod の書込に失敗")?;
+    fs::write(root.join("candidate.go"), &candidate.source).context("候補ソースの書込に失敗")?;
+    if let Some(dir) = tests_dir {
+        copy_ext(dir, root, "go")?;
+    }
+
+    // compile: go build
+    let mut c = Command::new("go");
+    c.args(["build", "./..."]).current_dir(root);
+    let compile = runner::run_stage("compile", c, timeout);
+    if !compile.is_passed() {
+        return Ok(StageResults::skipped_after_compile(compile));
+    }
+
+    // test: go test（テストファイルなし → exit 0 with "[no test files]", 成功扱い）
+    let mut t = Command::new("go");
+    t.args(["test", "./..."]).current_dir(root);
+    let test = runner::run_stage("test", t, timeout);
+
+    // lint: go vet（指摘があっても stage は成功扱い、件数のみ採点に使う）
+    let mut l = Command::new("sh");
+    l.arg("-c")
+        .arg("go vet ./... 1>&2; true")
+        .current_dir(root);
+    let (lint, lint_out) = runner::run_stage_capture("go-vet", l, timeout);
+    let lint_warnings = count_go_vet_findings(&lint_out);
+
+    Ok(StageResults {
+        compile,
+        test,
+        lint,
+        lint_warnings,
+        prop_test: StageOutcome::Skipped,
+        wasm: StageOutcome::Skipped,
+        wasm_fuel_used: None,
+    })
+}
+
+/// JavaScript 候補: node --check（構文検証）→ node 実行 → （lint なし）。
+/// prop_test / wasm は非対応のため Skipped。
+fn run_js_stages(
+    root: &Path,
+    candidate: &Candidate,
+    timeout: Duration,
+    tests_dir: Option<&Path>,
+) -> Result<StageResults> {
+    fs::write(root.join("candidate.js"), &candidate.source).context("候補ソースの書込に失敗")?;
+    if let Some(dir) = tests_dir {
+        copy_ext(dir, root, "js")?;
+    }
+
+    // compile: 構文チェック
+    let mut c = Command::new("node");
+    c.args(["--check", "candidate.js"]).current_dir(root);
+    let compile = runner::run_stage("compile", c, timeout);
+    if !compile.is_passed() {
+        return Ok(StageResults::skipped_after_compile(compile));
+    }
+
+    // test: Node 組込みランナー（18+）で candidate.js + *.test.js を実行。
+    // ファイル自体が正常実行されれば "tests 1, pass 1" で exit 0。
+    // 1>&2 でランナー出力を stderr に回し、runner がエラー詳細をキャプチャできるようにする。
+    let mut t = Command::new("sh");
+    t.arg("-c")
+        .arg(r#"node --test candidate.js $(ls *.test.js 2>/dev/null) 1>&2"#)
+        .current_dir(root);
+    let test = runner::run_stage("test", t, timeout);
+
+    // lint: node --check は構文のみ。ESLint は設定なしでは動かないため Skipped。
+    Ok(StageResults {
+        compile,
+        test,
+        lint: StageOutcome::Skipped,
+        lint_warnings: 0,
         prop_test: StageOutcome::Skipped,
         wasm: StageOutcome::Skipped,
         wasm_fuel_used: None,

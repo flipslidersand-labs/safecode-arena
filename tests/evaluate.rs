@@ -228,3 +228,98 @@ fn wasm_entry_runs_sandbox_and_awards_resource_usage() {
         .stdout(predicate::str::contains("\"wasm\""))
         .stdout(predicate::str::contains("\"resource_usage\": 5.0"));
 }
+
+// ── Go ──────────────────────────────────────────────────────────────────────
+
+fn write_go(name: &str, source: &str) -> tempfile::NamedTempFile {
+    let mut f = tempfile::Builder::new()
+        .prefix(name)
+        .suffix(".go")
+        .tempfile()
+        .unwrap();
+    f.write_all(source.as_bytes()).unwrap();
+    f.flush().unwrap();
+    f
+}
+
+#[test]
+fn go_clean_candidate_scores() {
+    // 構文 OK・go vet 指摘なし・テストなし（go test "./..." は "[no test files]" で exit 0）。
+    let cand = write_go(
+        "ok",
+        "package candidate\n\nfunc Add(a, b int) int {\n\treturn a + b\n}\n",
+    );
+
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(cand.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("85.0"))
+        .stdout(predicate::str::contains("✅"));
+}
+
+#[test]
+fn go_syntax_error_fails_compile() {
+    // 型構文エラー → go build 失敗。
+    let cand = write_go(
+        "ng",
+        "package candidate\n\nfunc Add(a, b int int {\n\treturn a + b\n}\n",
+    );
+
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(cand.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("❌"))
+        .stdout(predicate::str::contains("0.0"));
+}
+
+// ── JavaScript ───────────────────────────────────────────────────────────────
+
+fn write_js(name: &str, source: &str) -> tempfile::NamedTempFile {
+    let mut f = tempfile::Builder::new()
+        .prefix(name)
+        .suffix(".js")
+        .tempfile()
+        .unwrap();
+    f.write_all(source.as_bytes()).unwrap();
+    f.flush().unwrap();
+    f
+}
+
+#[test]
+fn js_clean_candidate_scores() {
+    // 構文 OK・テスト関数なし（node --test は ファイル実行成功で exit 0）。
+    let cand = write_js(
+        "ok",
+        "function add(a, b) { return a + b; }\nmodule.exports = { add };\n",
+    );
+
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(cand.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("85.0"))
+        .stdout(predicate::str::contains("✅"));
+}
+
+#[test]
+fn js_syntax_error_fails_compile() {
+    // 引数リスト構文エラー → node --check 失敗。
+    let cand = write_js("ng", "function add(a b) { return a + b; }\n");
+
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(cand.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("❌"))
+        .stdout(predicate::str::contains("0.0"));
+}
