@@ -50,11 +50,11 @@ impl SourceMetrics {
     }
 }
 
-/// clippy の stderr 出力から warning 件数を数える。
+/// clippy の stderr 出力から lint warning 件数を数える（Rust: clippy output format）。
 ///
 /// `cargo clippy` は各警告を `warning: ...` で始まる行として stderr に出力する。
 /// ただし `warning: N warnings emitted` のサマリ行は重複なので除外する。
-pub fn count_clippy_warnings(stderr: &str) -> usize {
+pub fn count_lint_warnings(stderr: &str) -> usize {
     stderr
         .lines()
         .filter(|l| {
@@ -111,16 +111,16 @@ mod tests {
     }
 
     #[test]
-    fn count_clippy_warnings_ignores_summary() {
+    fn count_lint_warnings_ignores_summary() {
         let stderr =
             "warning: unused variable `x`\nwarning: unused import\nwarning: 2 warnings emitted\n";
-        assert_eq!(count_clippy_warnings(stderr), 2);
+        assert_eq!(count_lint_warnings(stderr), 2);
     }
 
     #[test]
-    fn count_clippy_warnings_zero_on_clean() {
-        assert_eq!(count_clippy_warnings(""), 0);
-        assert_eq!(count_clippy_warnings("error[E0001]: something\n"), 0);
+    fn count_lint_warnings_zero_on_clean() {
+        assert_eq!(count_lint_warnings(""), 0);
+        assert_eq!(count_lint_warnings("error[E0001]: something\n"), 0);
     }
 
     #[test]

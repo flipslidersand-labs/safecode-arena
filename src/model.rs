@@ -92,10 +92,10 @@ pub struct Evaluation {
     pub candidate_id: String,
     pub compile: StageOutcome,
     pub test: StageOutcome,
-    /// cargo clippy の実行結果。compile が Passed のときのみ実行。
-    pub clippy: StageOutcome,
-    /// clippy が報告した warning 数。clippy が Skipped/Failed のときは 0。
-    pub clippy_warnings: usize,
+    /// linter（Rust: cargo clippy、Python: ruff）の実行結果。compile が Passed のときのみ実行。
+    pub lint: StageOutcome,
+    /// linter が報告した warning/finding 数。lint が Skipped/Failed のときは 0。
+    pub lint_warnings: usize,
     /// property test の実行結果。--prop-tests 指定時のみ実行。
     pub prop_test: StageOutcome,
     /// Wasm サンドボックス実行の結果。--wasm-entry 指定時のみ実行。

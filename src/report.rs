@@ -16,7 +16,7 @@ fn stage_cell(o: &StageOutcome) -> String {
     }
 }
 
-fn clippy_cell(o: &StageOutcome, warnings: usize) -> String {
+fn lint_cell(o: &StageOutcome, warnings: usize) -> String {
     match o {
         StageOutcome::Passed { .. } if warnings == 0 => "✅ 0 warn".to_string(),
         StageOutcome::Passed { .. } => format!("⚠️ {warnings} warn"),
@@ -95,7 +95,7 @@ fn render_summary_table(out: &mut String, evals: &[Evaluation]) {
             e.axes.resource_usage,
             stage_cell(&e.compile),
             stage_cell(&e.test),
-            clippy_cell(&e.clippy, e.clippy_warnings),
+            lint_cell(&e.lint, e.lint_warnings),
             stage_cell(&e.prop_test),
             wasm_cell(&e.wasm, e.wasm_fuel_used),
         ));
@@ -154,7 +154,7 @@ fn render_candidate_details(out: &mut String, evals: &[Evaluation]) {
         out.push_str(&format!("- テスト: {}\n", stage_cell(&e.test)));
         out.push_str(&format!(
             "- Clippy: {}\n",
-            clippy_cell(&e.clippy, e.clippy_warnings)
+            lint_cell(&e.lint, e.lint_warnings)
         ));
         out.push_str(&format!("- PropTest: {}\n", stage_cell(&e.prop_test)));
         if !matches!(e.wasm, StageOutcome::Skipped) {
@@ -171,7 +171,7 @@ fn render_candidate_details(out: &mut String, evals: &[Evaluation]) {
         for (label, stage) in [
             ("コンパイル", &e.compile),
             ("テスト", &e.test),
-            ("Clippy", &e.clippy),
+            ("Lint", &e.lint),
             ("PropTest", &e.prop_test),
         ] {
             if let StageOutcome::Failed { detail } = stage {
@@ -235,7 +235,7 @@ fn render_comparison(out: &mut String, evals: &[Evaluation]) {
     out.push('\n');
 
     // Clippy warnings
-    let warns: Vec<usize> = evals.iter().map(|e| e.clippy_warnings).collect();
+    let warns: Vec<usize> = evals.iter().map(|e| e.lint_warnings).collect();
     let min_warn = warns.iter().copied().min().unwrap_or(0);
     out.push_str("| Clippy警告 |");
     for w in &warns {
@@ -314,7 +314,7 @@ pub fn render_html(evals: &[Evaluation]) -> String {
             e.axes.correctness, e.axes.security, e.axes.performance, e.axes.maintainability,
             stage_label(&e.compile), stage_cell(&e.compile),
             stage_label(&e.test), stage_cell(&e.test),
-            clippy_cell(&e.clippy, e.clippy_warnings),
+            lint_cell(&e.lint, e.lint_warnings),
             stage_label(&e.prop_test), stage_cell(&e.prop_test),
         ));
     }
@@ -369,7 +369,7 @@ pub fn render_html(evals: &[Evaluation]) -> String {
         body.push_str(&format!("<li>テスト: {}</li>\n", stage_cell(&e.test)));
         body.push_str(&format!(
             "<li>Clippy: {}</li>\n",
-            clippy_cell(&e.clippy, e.clippy_warnings)
+            lint_cell(&e.lint, e.lint_warnings)
         ));
         body.push_str(&format!(
             "<li>PropTest: {}</li>\n",

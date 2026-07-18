@@ -1,7 +1,7 @@
 //! 検証パイプライン駆動。候補を一時 Cargo プロジェクトへ展開し、
 //! compile → test → 採点 までを実行する。
 
-use crate::analysis::{count_clippy_warnings, count_ruff_findings, SourceMetrics};
+use crate::analysis::{count_lint_warnings, count_ruff_findings, SourceMetrics};
 use crate::config::Rubric;
 use crate::model::{Candidate, Evaluation, Language, StageOutcome};
 use crate::{runner, scoring, wasm};
@@ -157,8 +157,8 @@ fn run_wasm_stage(
 }
 
 /// 各検証ステージの生結果。言語ごとのランナーが埋め、`assemble` が採点する。
-/// `lint` / `lint_warnings` は Rust では clippy、Python では ruff を指す
-/// （`Evaluation` 上は互換のため clippy フィールドに格納する）。
+/// `lint` / `lint_warnings` は Rust では cargo clippy、Python では ruff を指す
+/// 
 struct StageResults {
     compile: StageOutcome,
     test: StageOutcome,
@@ -234,8 +234,8 @@ fn assemble(candidate: &Candidate, r: StageResults, rubric: &Rubric) -> Evaluati
         candidate_id: candidate.id.clone(),
         compile: r.compile,
         test: r.test,
-        clippy: r.lint,
-        clippy_warnings: r.lint_warnings,
+        lint: r.lint,
+        lint_warnings: r.lint_warnings,
         prop_test: r.prop_test,
         wasm: r.wasm,
         wasm_fuel_used: r.wasm_fuel_used,
@@ -244,7 +244,7 @@ fn assemble(candidate: &Candidate, r: StageResults, rubric: &Rubric) -> Evaluati
     }
 }
 
-/// Rust 候補: 一時 Cargo プロジェクトで compile → test → clippy → prop_test → wasm。
+/// Rust 候補: 一時 Cargo プロジェクトで compile → test → lint(clippy) → prop_test → wasm。
 fn run_rust_stages(
     root: &Path,
     candidate: &Candidate,
@@ -281,7 +281,7 @@ fn run_rust_stages(
     c.args(["clippy", "--", "-W", "clippy::all"])
         .current_dir(root);
     let (lint, lint_stderr) = runner::run_stage_capture("clippy", c, timeout);
-    let lint_warnings = count_clippy_warnings(&lint_stderr);
+    let lint_warnings = count_lint_warnings(&lint_stderr);
 
     let prop_test = if let Some(prop_dir) = prop_tests_dir {
         copy_ext(prop_dir, &root.join("tests"), "rs")?;

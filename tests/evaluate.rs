@@ -1,5 +1,5 @@
 //! E2E テスト。`safecode evaluate` を実バイナリで起動し、
-//! 一時 Cargo プロジェクトでの compile/test/clippy/採点/レポートを検証する。
+//! 一時 Cargo プロジェクトでの compile/test/lint/採点/レポートを検証する。
 //!
 //! Phase 3 以降のスコア上限:
 //!   prop_test なし → correctness = 80%（compile 40% + test 40%）
@@ -32,7 +32,7 @@ fn evaluate_compiling_candidate_scores_above_zero() {
         .arg(cand.path())
         .assert()
         .success()
-        // compile+test+clippy(0 warn)+性能(単独最速) 85.0
+        // compile+test+lint(0 warn)+性能(単独最速) 85.0
         // prop_test は Skipped なので correctness は 80% (40+40)
         .stdout(predicate::str::contains("✅"))
         .stdout(predicate::str::contains("85.0"))
@@ -113,7 +113,7 @@ fn db_persists_runs_and_detects_regression() {
     // 候補 ID を固定するため同名ファイルを使う。
     let subject = work.path().join("subject.rs");
 
-    // run #1: clippy 警告なしのクリーンな候補（安全 20）
+    // run #1: lint 警告なしのクリーンな候補（安全 20）
     std::fs::write(&subject, "pub fn add(a: i32, b: i32) -> i32 { a + b }\n").unwrap();
     Command::cargo_bin("safecode")
         .unwrap()
@@ -124,7 +124,7 @@ fn db_persists_runs_and_detects_regression() {
         .success()
         .stderr(predicate::str::contains("run #1 を保存"));
 
-    // run #2: 未使用変数で clippy 警告 → スコア下落 → リグレッション
+    // run #2: 未使用変数で lint 警告 → スコア下落 → リグレッション
     std::fs::write(
         &subject,
         "pub fn add(a: i32, b: i32) -> i32 { let x = 1; a + b }\n",
