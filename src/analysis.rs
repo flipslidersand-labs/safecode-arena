@@ -105,6 +105,46 @@ pub fn count_go_vet_findings(stderr: &str) -> usize {
         .count()
 }
 
+/// `staticcheck` の出力から指摘件数を数える。
+///
+/// staticcheck は `file.go:line:col: message (SAxxxx)` 形式で stdout に出力する。
+pub fn count_staticcheck_findings(stdout: &str) -> usize {
+    stdout
+        .lines()
+        .filter(|l| {
+            let t = l.trim();
+            !t.is_empty() && t.contains(".go:")
+        })
+        .count()
+}
+
+/// ESLint の出力から指摘件数を数える。
+///
+/// `eslint --format compact` は末尾に `N problems` または `N problem` を出力する。
+pub fn count_eslint_findings(output: &str) -> usize {
+    for line in output.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_suffix(" problems") {
+            if let Ok(n) = rest.trim().parse::<usize>() {
+                return n;
+            }
+        }
+        if let Some(rest) = t.strip_suffix(" problem") {
+            if let Ok(n) = rest.trim().parse::<usize>() {
+                return n;
+            }
+        }
+    }
+    // fallback: count diagnostic lines (contain ".js:" and error/warning)
+    output
+        .lines()
+        .filter(|l| {
+            let t = l.trim();
+            (t.contains("error") || t.contains("warning")) && t.contains(".js:")
+        })
+        .count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,5 +206,27 @@ mod tests {
     fn count_ruff_findings_zero_when_clean() {
         assert_eq!(count_ruff_findings("All checks passed!\n"), 0);
         assert_eq!(count_ruff_findings(""), 0);
+    }
+
+    #[test]
+    fn count_staticcheck_finds_diagnostics() {
+        let out = "candidate.go:5:2: S1000 use plain channel send or receive (S1000)\n";
+        assert_eq!(count_staticcheck_findings(out), 1);
+    }
+
+    #[test]
+    fn count_staticcheck_zero_on_clean() {
+        assert_eq!(count_staticcheck_findings(""), 0);
+    }
+
+    #[test]
+    fn count_eslint_uses_summary_line() {
+        let out = "candidate.js: line 3, col 7, warning - 'x' is defined but never used. (no-unused-vars)\n✖ 1 problem (0 errors, 1 warning)\n";
+        assert_eq!(count_eslint_findings(out), 1);
+    }
+
+    #[test]
+    fn count_eslint_zero_on_clean() {
+        assert_eq!(count_eslint_findings(""), 0);
     }
 }

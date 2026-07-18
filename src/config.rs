@@ -7,6 +7,21 @@
 //! performance = 15
 //! maintainability = 10
 //! resource_usage = 5
+//!
+//! # 言語別上書き（省略時は [weights] の値を使用）
+//! [weights.go]
+//! correctness = 55
+//! security = 15
+//! performance = 15
+//! maintainability = 10
+//! resource_usage = 5
+//!
+//! [weights.javascript]
+//! correctness = 60
+//! security = 15
+//! performance = 10
+//! maintainability = 10
+//! resource_usage = 5
 //! ```
 
 use anyhow::{Context, Result};
@@ -25,7 +40,6 @@ pub struct Rubric {
 
 impl Default for Rubric {
     fn default() -> Self {
-        // docs/spec.md の評価軸と一致。
         Rubric {
             correctness: 50.0,
             security: 20.0,
@@ -36,16 +50,67 @@ impl Default for Rubric {
     }
 }
 
+/// `safecode.toml` の全設定。言語別ルーブリックを含む。
+#[derive(Debug, Default)]
+pub struct Config {
+    pub default: Rubric,
+    pub rust: Option<Rubric>,
+    pub python: Option<Rubric>,
+    pub go: Option<Rubric>,
+    pub javascript: Option<Rubric>,
+}
+
+impl Config {
+    /// 言語名（"rust", "go", "python", "javascript"）に合ったルーブリックを返す。
+    pub fn rubric_for(&self, lang: &str) -> Rubric {
+        match lang {
+            "rust" => self.rust.unwrap_or(self.default),
+            "python" => self.python.unwrap_or(self.default),
+            "go" => self.go.unwrap_or(self.default),
+            "javascript" => self.javascript.unwrap_or(self.default),
+            _ => self.default,
+        }
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
-struct ConfigFile {
+struct LangWeights {
     #[serde(default)]
-    weights: Option<Rubric>,
+    correctness: Option<f64>,
+    #[serde(default)]
+    security: Option<f64>,
+    #[serde(default)]
+    performance: Option<f64>,
+    #[serde(default)]
+    maintainability: Option<f64>,
+    #[serde(default)]
+    resource_usage: Option<f64>,
+    #[serde(default)]
+    rust: Option<Rubric>,
+    #[serde(default)]
+    python: Option<Rubric>,
+    #[serde(default)]
+    go: Option<Rubric>,
+    #[serde(default)]
+    javascript: Option<Rubric>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TomlConfig {
+    #[serde(default)]
+    weights: Option<LangWeights>,
 }
 
 impl Rubric {
-    /// `safecode.toml` を読み込む。指定パスがあればそれを、
-    /// なければカレントの `safecode.toml` を探す。どちらも無ければ既定値。
+    /// 後方互換: グローバルルーブリックを読む。
     pub fn load(explicit: Option<&str>) -> Result<Rubric> {
+        Ok(Config::load(explicit)?.default)
+    }
+}
+
+impl Config {
+    /// `safecode.toml` を読み込んで `Config` を返す。
+    pub fn load(explicit: Option<&str>) -> Result<Config> {
         let path = match explicit {
             Some(p) => Some(Path::new(p).to_path_buf()),
             None => {
@@ -55,14 +120,35 @@ impl Rubric {
         };
 
         let Some(path) = path else {
-            return Ok(Rubric::default());
+            return Ok(Config::default());
         };
 
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("設定ファイルの読込に失敗: {}", path.display()))?;
-        let parsed: ConfigFile = toml::from_str(&text)
+        let parsed: TomlConfig = toml::from_str(&text)
             .with_context(|| format!("設定ファイルの解析に失敗: {}", path.display()))?;
-        Ok(parsed.weights.unwrap_or_default())
+
+        let base = Rubric::default();
+        let default_rubric = parsed.weights.as_ref().map(|w| Rubric {
+            correctness: w.correctness.unwrap_or(base.correctness),
+            security: w.security.unwrap_or(base.security),
+            performance: w.performance.unwrap_or(base.performance),
+            maintainability: w.maintainability.unwrap_or(base.maintainability),
+            resource_usage: w.resource_usage.unwrap_or(base.resource_usage),
+        }).unwrap_or(base);
+
+        let (rust, python, go, javascript) = parsed
+            .weights
+            .map(|w| (w.rust, w.python, w.go, w.javascript))
+            .unwrap_or_default();
+
+        Ok(Config {
+            default: default_rubric,
+            rust,
+            python,
+            go,
+            javascript,
+        })
     }
 }
 
@@ -94,5 +180,40 @@ mod tests {
     #[test]
     fn missing_explicit_path_errors() {
         assert!(Rubric::load(Some("/no/such/safecode.toml")).is_err());
+    }
+
+    #[test]
+    fn lang_specific_weights_override_default() {
+        let mut f = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
+        writeln!(
+            f,
+            r#"
+[weights]
+correctness = 50
+security = 20
+performance = 15
+maintainability = 10
+resource_usage = 5
+
+[weights.go]
+correctness = 55
+security = 15
+performance = 15
+maintainability = 10
+resource_usage = 5
+"#
+        )
+        .unwrap();
+        let c = Config::load(Some(f.path().to_str().unwrap())).unwrap();
+        assert_eq!(c.default.correctness, 50.0);
+        assert_eq!(c.rubric_for("go").correctness, 55.0);
+        assert_eq!(c.rubric_for("go").security, 15.0);
+        assert_eq!(c.rubric_for("rust").correctness, 50.0);
+    }
+
+    #[test]
+    fn rubric_for_unknown_lang_returns_default() {
+        let c = Config::default();
+        assert_eq!(c.rubric_for("cobol").correctness, 50.0);
     }
 }
