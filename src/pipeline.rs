@@ -331,9 +331,11 @@ fn run_python_stages(
     }
 
     // test: pytest（exit 5 = テスト未収集 → 成功扱い、Rust の 0 tests と同様）
+    // --override-ini=python_files=*.py で candidate.py を収集対象に含める。
+    // デフォルト discovery は test_*.py のみのため、明示オーバーライドが必要。
     let mut t = Command::new("sh");
     t.arg("-c")
-        .arg("python3 -m pytest -q . ; c=$?; [ $c -eq 0 ] || [ $c -eq 5 ]")
+        .arg(r#"python3 -m pytest -q --override-ini="python_files=*.py" . ; c=$?; [ $c -eq 0 ] || [ $c -eq 5 ]"#)
         .current_dir(root);
     let test = runner::run_stage("test", t, timeout);
 

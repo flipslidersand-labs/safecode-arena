@@ -193,6 +193,27 @@ fn python_syntax_error_fails_compile() {
 }
 
 #[test]
+fn python_inline_test_failure_detected() {
+    // candidate.py 内の test_ 関数が pytest に収集されて失敗することを確認。
+    // 修正前: pytest が candidate.py をスキップ → exit 5 → 成功扱い → score 85.0
+    // 修正後: pytest が test_wrong を実行 → 失敗 → test stage Failed → score 50.0
+    // （test 失敗時は performance も 0 になるため 50 = compile20 + sec20 + maint10）
+    let cand = write_py(
+        "inline_fail",
+        "def add(a, b):\n    return a + b\n\ndef test_wrong():\n    assert add(1, 2) == 99\n",
+    );
+
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(cand.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("50.0"))
+        .stdout(predicate::str::contains("❌ failed"));
+}
+
+#[test]
 fn wasm_entry_runs_sandbox_and_awards_resource_usage() {
     // wasm32-wasip1 にビルドして隔離実行できる候補。
     let cand = write_candidate("ok", "pub fn run() {}\n");
