@@ -158,7 +158,7 @@ fn run_wasm_stage(
 
 /// 各検証ステージの生結果。言語ごとのランナーが埋め、`assemble` が採点する。
 /// `lint` / `lint_warnings` は Rust では cargo clippy、Python では ruff を指す
-/// 
+///
 struct StageResults {
     compile: StageOutcome,
     test: StageOutcome,
@@ -167,6 +167,9 @@ struct StageResults {
     prop_test: StageOutcome,
     wasm: StageOutcome,
     wasm_fuel_used: Option<u64>,
+    mutation: StageOutcome,
+    mutation_caught: usize,
+    mutation_total: usize,
 }
 
 impl StageResults {
@@ -180,6 +183,9 @@ impl StageResults {
             prop_test: StageOutcome::Skipped,
             wasm: StageOutcome::Skipped,
             wasm_fuel_used: None,
+            mutation: StageOutcome::Skipped,
+            mutation_caught: 0,
+            mutation_total: 0,
         }
     }
 }
@@ -189,7 +195,8 @@ impl StageResults {
 /// - compile が通らなかった場合、後続ステージはすべて `Skipped`。
 /// - `tests_dir`: 統合テストを置いたディレクトリ（任意）。
 /// - `prop_tests_dir`: proptest ファイルのディレクトリ（Rust のみ）。
-/// - `wasm`: Wasm サンドボックス実行のオプション（Rust のみ）。`entry` 指定時のみ実行。
+/// - `wasm_opts`: Wasm サンドボックス実行のオプション（Rust のみ）。`entry` 指定時のみ実行。
+/// - `run_mutation`: true のとき Rust 候補に対して `cargo mutants` を実行する（デフォルト off）。
 pub fn evaluate_candidate(
     candidate: &Candidate,
     timeout: Duration,
@@ -197,6 +204,7 @@ pub fn evaluate_candidate(
     tests_dir: Option<&Path>,
     prop_tests_dir: Option<&Path>,
     wasm_opts: &WasmOptions,
+    run_mutation: bool,
 ) -> Result<Evaluation> {
     let dir = tempfile::tempdir().context("一時ディレクトリの生成に失敗")?;
     let root = dir.path();
@@ -209,6 +217,7 @@ pub fn evaluate_candidate(
             tests_dir,
             prop_tests_dir,
             wasm_opts,
+            run_mutation,
         )?,
         Language::Python => run_python_stages(root, candidate, timeout, tests_dir)?,
         Language::Go => run_go_stages(root, candidate, timeout, tests_dir)?,
@@ -230,6 +239,8 @@ fn assemble(candidate: &Candidate, r: StageResults, rubric: &Rubric) -> Evaluati
         &r.wasm,
         &metrics,
         rubric,
+        r.mutation_caught,
+        r.mutation_total,
     );
     let score = axes.total();
     Evaluation {
@@ -241,12 +252,15 @@ fn assemble(candidate: &Candidate, r: StageResults, rubric: &Rubric) -> Evaluati
         prop_test: r.prop_test,
         wasm: r.wasm,
         wasm_fuel_used: r.wasm_fuel_used,
+        mutation: r.mutation,
+        mutation_caught: r.mutation_caught,
+        mutation_total: r.mutation_total,
         axes,
         score,
     }
 }
 
-/// Rust 候補: 一時 Cargo プロジェクトで compile → test → lint(clippy) → prop_test → wasm。
+/// Rust 候補: 一時 Cargo プロジェクトで compile → test → lint(clippy) → prop_test → wasm → mutation。
 fn run_rust_stages(
     root: &Path,
     candidate: &Candidate,
@@ -254,6 +268,7 @@ fn run_rust_stages(
     tests_dir: Option<&Path>,
     prop_tests_dir: Option<&Path>,
     wasm_opts: &WasmOptions,
+    run_mutation: bool,
 ) -> Result<StageResults> {
     fs::create_dir_all(root.join("src")).context("src ディレクトリの作成に失敗")?;
     let toml = if prop_tests_dir.is_some() {
@@ -299,6 +314,12 @@ fn run_rust_stages(
         None => (StageOutcome::Skipped, None),
     };
 
+    let (mutation, mutation_caught, mutation_total) = if run_mutation && test.is_passed() {
+        run_rust_mutation(root, timeout)
+    } else {
+        (StageOutcome::Skipped, 0, 0)
+    };
+
     Ok(StageResults {
         compile,
         test,
@@ -307,7 +328,83 @@ fn run_rust_stages(
         prop_test,
         wasm,
         wasm_fuel_used,
+        mutation,
+        mutation_caught,
+        mutation_total,
     })
+}
+
+/// `cargo mutants` で Rust 候補のミューテーションテストを実行する。
+///
+/// - `cargo mutants` が PATH にない場合は `(Skipped, 0, 0)` を返す（減点なし）。
+/// - タイムアウトは test ステージの 3 倍を目安として渡す（ミュータント数に比例するため）。
+fn run_rust_mutation(root: &Path, timeout: Duration) -> (StageOutcome, usize, usize) {
+    // cargo mutants が利用可能か確認
+    let mutants_available = std::process::Command::new("cargo")
+        .args(["mutants", "--version"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !mutants_available {
+        return (StageOutcome::Skipped, 0, 0);
+    }
+
+    let out_dir = root.join("mutants-out");
+    let mut cmd = Command::new("cargo");
+    cmd.args([
+        "mutants",
+        "--manifest-path",
+        root.join("Cargo.toml").to_str().unwrap_or("Cargo.toml"),
+        "--output",
+        out_dir.to_str().unwrap_or("mutants-out"),
+        "--timeout",
+        "30",
+        "--jobs",
+        "1",
+        "--json",
+    ]);
+
+    // mutation testing は時間がかかるため timeout を 3 倍に緩める
+    let mutation_timeout = timeout * 3;
+    let (outcome, stdout) = runner::run_stage_capture("mutation", cmd, mutation_timeout);
+
+    if !outcome.is_passed() {
+        // cargo mutants はミュータントが missed でも exit 1 を返すため、
+        // JSON が取れていれば成功扱いにする
+        if let Some((caught, total)) = parse_mutants_json(&stdout) {
+            let duration_ms = outcome
+                .duration_ms()
+                .unwrap_or(mutation_timeout.as_millis() as u64);
+            return (StageOutcome::Passed { duration_ms }, caught, total);
+        }
+        return (outcome, 0, 0);
+    }
+
+    match parse_mutants_json(&stdout) {
+        Some((caught, total)) => (outcome, caught, total),
+        None => (outcome, 0, 0),
+    }
+}
+
+/// `cargo mutants --json` の出力から (caught, total_mutants) を取り出す。
+fn parse_mutants_json(stdout: &str) -> Option<(usize, usize)> {
+    #[derive(serde::Deserialize)]
+    struct MutantsOutput {
+        total_mutants: usize,
+        caught: usize,
+    }
+    // stdout の最後の JSON 行を探す（進捗ログが混在する場合があるため）
+    for line in stdout.lines().rev() {
+        let line = line.trim();
+        if line.starts_with('{') {
+            if let Ok(m) = serde_json::from_str::<MutantsOutput>(line) {
+                return Some((m.caught, m.total_mutants));
+            }
+        }
+    }
+    None
 }
 
 /// Python 候補: py_compile（構文チェック）→ pytest → ruff。
@@ -357,6 +454,9 @@ fn run_python_stages(
         prop_test: StageOutcome::Skipped,
         wasm: StageOutcome::Skipped,
         wasm_fuel_used: None,
+        mutation: StageOutcome::Skipped,
+        mutation_caught: 0,
+        mutation_total: 0,
     })
 }
 
@@ -432,6 +532,9 @@ fn run_go_stages(
         prop_test: StageOutcome::Skipped,
         wasm: StageOutcome::Skipped,
         wasm_fuel_used: None,
+        mutation: StageOutcome::Skipped,
+        mutation_caught: 0,
+        mutation_total: 0,
     })
 }
 
@@ -483,5 +586,8 @@ fn run_js_stages(
         prop_test: StageOutcome::Skipped,
         wasm: StageOutcome::Skipped,
         wasm_fuel_used: None,
+        mutation: StageOutcome::Skipped,
+        mutation_caught: 0,
+        mutation_total: 0,
     })
 }

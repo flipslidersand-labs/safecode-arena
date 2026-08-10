@@ -69,6 +69,10 @@ enum Command {
         /// Wasm 実行のメモリ上限（MB）。
         #[arg(long, default_value_t = 64)]
         wasm_max_memory_mb: usize,
+        /// ミューテーションテスト（cargo mutants）を実行してテスト品質を採点する。
+        /// 実行時間が長いためデフォルト off。cargo-mutants が PATH にない場合は Skipped 扱い。
+        #[arg(long)]
+        mutation: bool,
     },
     /// 保存済みの run 履歴を一覧表示する。
     History {
@@ -94,6 +98,7 @@ fn main() -> anyhow::Result<()> {
             wasm_entry,
             wasm_fuel,
             wasm_max_memory_mb,
+            mutation,
         } => run_evaluate(EvaluateArgs {
             candidates,
             tests,
@@ -107,6 +112,7 @@ fn main() -> anyhow::Result<()> {
             wasm_entry,
             wasm_fuel,
             wasm_max_memory_mb,
+            mutation,
         }),
         Command::History { db } => run_history(&db),
     }
@@ -126,6 +132,7 @@ struct EvaluateArgs {
     wasm_entry: Option<String>,
     wasm_fuel: u64,
     wasm_max_memory_mb: usize,
+    mutation: bool,
 }
 
 fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
@@ -153,6 +160,7 @@ fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
             tests_dir,
             prop_tests_dir,
             &wasm_opts,
+            args.mutation,
         )?);
     }
 

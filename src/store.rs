@@ -173,6 +173,9 @@ mod tests {
             prop_test: StageOutcome::Skipped,
             wasm: StageOutcome::Skipped,
             wasm_fuel_used: None,
+            mutation: StageOutcome::Skipped,
+            mutation_caught: 0,
+            mutation_total: 0,
             axes: AxisScores::default(),
             score,
         }

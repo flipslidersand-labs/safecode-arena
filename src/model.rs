@@ -107,6 +107,12 @@ pub struct Evaluation {
     pub wasm: StageOutcome,
     /// Wasm 実行で消費した fuel（命令数）。実行しなかった場合は None。
     pub wasm_fuel_used: Option<u64>,
+    /// ミューテーションテスト（cargo mutants）の実行結果。--mutation 指定時のみ実行。
+    pub mutation: StageOutcome,
+    /// ミューテーションテストで検出できたミュータント数。
+    pub mutation_caught: usize,
+    /// ミューテーションテストで生成されたミュータント総数。
+    pub mutation_total: usize,
     /// 軸別の獲得点。
     pub axes: AxisScores,
     /// 0.0〜100.0 の総合スコア（= axes.total()）。
