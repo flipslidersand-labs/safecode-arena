@@ -370,18 +370,12 @@ fn run_rust_mutation(root: &Path, timeout: Duration) -> (StageOutcome, usize, us
     let mutation_timeout = timeout * 3;
     let (outcome, stdout) = runner::run_stage_capture("mutation", cmd, mutation_timeout);
 
+    // cargo mutants がステージ自体に失敗した場合（timeout等）は outcome をそのまま返す
     if !outcome.is_passed() {
-        // cargo mutants はミュータントが missed でも exit 1 を返すため、
-        // JSON が取れていれば成功扱いにする
-        if let Some((caught, total)) = parse_mutants_json(&stdout) {
-            let duration_ms = outcome
-                .duration_ms()
-                .unwrap_or(mutation_timeout.as_millis() as u64);
-            return (StageOutcome::Passed { duration_ms }, caught, total);
-        }
         return (outcome, 0, 0);
     }
 
+    // outcome.is_passed() — JSON パース成功
     match parse_mutants_json(&stdout) {
         Some((caught, total)) => (outcome, caught, total),
         None => (outcome, 0, 0),
