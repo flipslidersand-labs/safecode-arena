@@ -38,6 +38,11 @@ fn lint_maintainability_ratio(warnings: usize) -> f64 {
 ///
 /// Phase 4 追加パラメータ:
 /// - `wasm`: Wasm サンドボックス実行の結果（resource_usage に反映）
+///
+/// Phase 8 追加パラメータ:
+/// - `mutation_caught` / `mutation_total`: cargo mutants の結果（correctness に反映）
+///   mutation が実行された場合（total > 0）、correctness の重みを再配分する:
+///   compile(30%) + test(30%) + prop_test(15%) + mutation(25%)
 #[allow(clippy::too_many_arguments)]
 pub fn axes_without_performance(
     compile: &StageOutcome,
@@ -48,19 +53,41 @@ pub fn axes_without_performance(
     wasm: &StageOutcome,
     metrics: &SourceMetrics,
     rubric: &Rubric,
+    mutation_caught: usize,
+    mutation_total: usize,
 ) -> AxisScores {
-    // correctness: compile(40%) + test(40%) + prop_test(20%)
-    // prop_test が Skipped の場合は compile+test のみ（上限 80%）
-    let mut correctness = 0.0;
-    if compile.is_passed() {
-        correctness += rubric.correctness * 0.4;
-    }
-    if test.is_passed() {
-        correctness += rubric.correctness * 0.4;
-    }
-    if prop_test.is_passed() {
-        correctness += rubric.correctness * 0.2;
-    }
+    // mutation が実行された場合は重みを再配分する。
+    // Skipped（total == 0）の場合は従来通り compile(40%) + test(40%) + prop_test(20%)。
+    let mut correctness = if mutation_total > 0 {
+        let mutation_ratio = mutation_caught as f64 / mutation_total as f64;
+        let mut c = 0.0;
+        if compile.is_passed() {
+            c += rubric.correctness * 0.30;
+        }
+        if test.is_passed() {
+            c += rubric.correctness * 0.30;
+        }
+        if prop_test.is_passed() {
+            c += rubric.correctness * 0.15;
+        }
+        c += rubric.correctness * 0.25 * mutation_ratio;
+        c
+    } else {
+        // correctness: compile(40%) + test(40%) + prop_test(20%)
+        // prop_test が Skipped の場合は compile+test のみ（上限 80%）
+        let mut c = 0.0;
+        if compile.is_passed() {
+            c += rubric.correctness * 0.4;
+        }
+        if test.is_passed() {
+            c += rubric.correctness * 0.4;
+        }
+        if prop_test.is_passed() {
+            c += rubric.correctness * 0.2;
+        }
+        c
+    };
+    let _ = &mut correctness; // suppress unused_mut warning
 
     // ビルドできないコードは security / maintainability を採点しない
     let (security, maintainability) = if compile.is_passed() {
@@ -155,6 +182,8 @@ mod tests {
             &StageOutcome::Skipped,
             &metrics(src),
             &Rubric::default(),
+            0,
+            0,
         )
     }
 
@@ -178,6 +207,8 @@ mod tests {
             &StageOutcome::Skipped,
             &metrics("fn f(){}"),
             &r,
+            0,
+            0,
         );
         assert_eq!(a.correctness, r.correctness);
     }
@@ -208,6 +239,8 @@ mod tests {
             &StageOutcome::Skipped,
             &metrics("fn f(){}"),
             &r,
+            0,
+            0,
         );
         let with_warn = axes_without_performance(
             &passed(1),
@@ -218,6 +251,8 @@ mod tests {
             &StageOutcome::Skipped,
             &metrics("fn f(){}"),
             &r,
+            0,
+            0,
         );
         assert!(no_warn.security > with_warn.security);
     }
@@ -233,6 +268,8 @@ mod tests {
             &StageOutcome::Skipped,
             &metrics("fn f(){}"),
             &Rubric::default(),
+            0,
+            0,
         );
         let lint_fail = axes_without_performance(
             &passed(1),
@@ -243,6 +280,8 @@ mod tests {
             &StageOutcome::Skipped,
             &metrics("fn f(){}"),
             &Rubric::default(),
+            0,
+            0,
         );
         // lint failed → lint_sec = 0, unsafe clean → unsafe_ratio = 1.0
         // security = rubric.security * (1.0*0.5 + 0.0*0.5) = rubric.security * 0.5
@@ -261,6 +300,8 @@ mod tests {
             &passed(1), // wasm passed
             &metrics("fn f(){}"),
             &r,
+            0,
+            0,
         );
         let no_wasm = axes_without_performance(
             &passed(1),
@@ -271,6 +312,8 @@ mod tests {
             &StageOutcome::Skipped, // wasm not run
             &metrics("fn f(){}"),
             &r,
+            0,
+            0,
         );
         assert_eq!(with_wasm.resource_usage, r.resource_usage);
         assert_eq!(no_wasm.resource_usage, 0.0);
@@ -288,6 +331,9 @@ mod tests {
             prop_test: StageOutcome::Skipped,
             wasm: StageOutcome::Skipped,
             wasm_fuel_used: None,
+            mutation: StageOutcome::Skipped,
+            mutation_caught: 0,
+            mutation_total: 0,
             axes: AxisScores::default(),
             score: 0.0,
         };
@@ -310,6 +356,9 @@ mod tests {
             prop_test: StageOutcome::Skipped,
             wasm: StageOutcome::Skipped,
             wasm_fuel_used: None,
+            mutation: StageOutcome::Skipped,
+            mutation_caught: 0,
+            mutation_total: 0,
             axes: AxisScores::default(),
             score: 0.0,
         }];
@@ -328,11 +377,93 @@ mod tests {
             prop_test: StageOutcome::Skipped,
             wasm: StageOutcome::Skipped,
             wasm_fuel_used: None,
+            mutation: StageOutcome::Skipped,
+            mutation_caught: 0,
+            mutation_total: 0,
             axes: AxisScores::default(),
             score: s,
         };
         let ranked = rank(vec![mk("a", 25.0), mk("b", 50.0), mk("c", 0.0)]);
         let ids: Vec<_> = ranked.iter().map(|e| e.candidate_id.as_str()).collect();
         assert_eq!(ids, vec!["b", "a", "c"]);
+    }
+
+    // ── Phase 8: mutation testing ─────────────────────────────────────────────
+
+    #[test]
+    fn mutation_skipped_gives_same_as_before() {
+        // mutation_total == 0 → 従来の重み (compile 40% + test 40%)
+        let r = Rubric::default();
+        let a = axes_without_performance(
+            &passed(1),
+            &passed(1),
+            &StageOutcome::Skipped,
+            &StageOutcome::Skipped,
+            0,
+            &StageOutcome::Skipped,
+            &metrics("fn f(){}"),
+            &r,
+            0, // mutation_caught
+            0, // mutation_total → Skipped
+        );
+        assert_eq!(a.correctness, r.correctness * 0.8);
+    }
+
+    #[test]
+    fn mutation_full_score_boosts_correctness() {
+        // mutation 全検出 (caught == total) → compile(30%) + test(30%) + mutation(25%) = 85%
+        let r = Rubric::default();
+        let a = axes_without_performance(
+            &passed(1),
+            &passed(1),
+            &StageOutcome::Skipped,
+            &StageOutcome::Skipped,
+            0,
+            &StageOutcome::Skipped,
+            &metrics("fn f(){}"),
+            &r,
+            12, // mutation_caught
+            12, // mutation_total
+        );
+        assert!((a.correctness - r.correctness * 0.85).abs() < 1e-9);
+    }
+
+    #[test]
+    fn mutation_zero_score_reduces_correctness() {
+        // mutation 0 件検出 → compile(30%) + test(30%) + mutation(0%) = 60%
+        let r = Rubric::default();
+        let a = axes_without_performance(
+            &passed(1),
+            &passed(1),
+            &StageOutcome::Skipped,
+            &StageOutcome::Skipped,
+            0,
+            &StageOutcome::Skipped,
+            &metrics("fn f(){}"),
+            &r,
+            0,  // mutation_caught
+            12, // mutation_total → 0%
+        );
+        assert!((a.correctness - r.correctness * 0.60).abs() < 1e-9);
+    }
+
+    #[test]
+    fn mutation_partial_score_is_proportional() {
+        // 9/12 = 75% → compile(30%) + test(30%) + mutation(25% * 0.75) = 78.75%
+        let r = Rubric::default();
+        let a = axes_without_performance(
+            &passed(1),
+            &passed(1),
+            &StageOutcome::Skipped,
+            &StageOutcome::Skipped,
+            0,
+            &StageOutcome::Skipped,
+            &metrics("fn f(){}"),
+            &r,
+            9,  // mutation_caught
+            12, // mutation_total
+        );
+        let expected = r.correctness * (0.30 + 0.30 + 0.25 * 0.75);
+        assert!((a.correctness - expected).abs() < 1e-9);
     }
 }
