@@ -440,6 +440,12 @@ fn run_python_stages(
     let (lint, lint_out) = runner::run_stage_capture("ruff", l, timeout);
     let lint_warnings = count_ruff_findings(&lint_out);
 
+    let (mutation, mutation_caught, mutation_total) = if test.is_passed() {
+        run_python_mutation(root, timeout)
+    } else {
+        (StageOutcome::Skipped, 0, 0)
+    };
+
     Ok(StageResults {
         compile,
         test,
@@ -448,10 +454,55 @@ fn run_python_stages(
         prop_test: StageOutcome::Skipped,
         wasm: StageOutcome::Skipped,
         wasm_fuel_used: None,
-        mutation: StageOutcome::Skipped,
-        mutation_caught: 0,
-        mutation_total: 0,
+        mutation,
+        mutation_caught,
+        mutation_total,
     })
+}
+
+/// Python 候補に mutmut でミューテーションテストを実行する。
+fn run_python_mutation(root: &Path, timeout: Duration) -> (StageOutcome, usize, usize) {
+    let mutmut_available = std::process::Command::new("mutmut")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !mutmut_available {
+        return (StageOutcome::Skipped, 0, 0);
+    }
+
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c")
+        .arg("mutmut run --tests-dir . --output mutmut.json --json-output 2>&1")
+        .current_dir(root);
+
+    let mutation_timeout = timeout * 3;
+    let (outcome, stdout) = runner::run_stage_capture("mutation", cmd, mutation_timeout);
+
+    match parse_mutmut_json(&stdout) {
+        Some((caught, total)) => (outcome, caught, total),
+        None => (outcome, 0, 0),
+    }
+}
+
+/// mutmut JSON 出力から (caught, total_mutants) を取り出す。
+fn parse_mutmut_json(stdout: &str) -> Option<(usize, usize)> {
+    #[derive(serde::Deserialize)]
+    struct MutmutOutput {
+        total_mutants: usize,
+        caught: usize,
+    }
+    for line in stdout.lines().rev() {
+        let line = line.trim();
+        if line.starts_with('{') {
+            if let Ok(m) = serde_json::from_str::<MutmutOutput>(line) {
+                return Some((m.caught, m.total_mutants));
+            }
+        }
+    }
+    None
 }
 
 /// `staticcheck` が PATH に存在するか確認する。
