@@ -39,18 +39,20 @@
 | ------ | ------------------------ | ----------------------------------------------- |
 | Rust   | `cargo` / `cargo clippy` | compile / test / lint（security・保守シグナル） |
 | Rust   | `proptest`               | property test（`--prop-tests` 指定時）          |
+| Rust   | `cargo-mutants`          | mutation testing（`--mutation` 指定時）         |
 | Python | `python3 -m py_compile`  | compile（構文チェック）                         |
 | Python | `pytest`                 | test（`test_*.py` を収集）                      |
 | Python | `ruff`                   | lint（security・保守シグナル）                  |
+| Python | `mutmut`                 | mutation testing（`--mutation` 指定時）         |
 
 ## 発展フェーズで追加予定（未使用）
 
 | クレート      | 用途                                             | フェーズ |
 | ------------- | ------------------------------------------------ | -------- |
-| `tree-sitter` | AST 解析・コード類似度（精緻な maintainability） | Phase 5+ |
-| `cargo-fuzz`  | Fuzzing 実行（外部ツール）                       | Phase 5+ |
-| `criterion`   | 性能ベンチマーク（絶対性能）                     | Phase 5+ |
-| `cargo-audit` | 依存の脆弱性スキャン                             | Phase 5+ |
+| `tree-sitter` | AST 解析・コード類似度（精緻な maintainability） | Phase 9+ |
+| `cargo-fuzz`  | Fuzzing 実行（外部ツール）                       | Phase 9+ |
+| `criterion`   | 性能ベンチマーク（絶対性能）                     | Phase 9+ |
+| `cargo-audit` | 依存の脆弱性スキャン                             | Phase 9+ |
 
 ## 開発ツール
 

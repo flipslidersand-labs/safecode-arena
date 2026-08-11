@@ -104,8 +104,10 @@ safecode evaluate loop.rs --wasm-entry run --wasm-fuel 100000  # fuel 枯渇 →
 ## 発展（Phase 5+）
 
 - ✅ Python 対応（py_compile / pytest / ruff、`src/pipeline.rs` の言語別ランナー / ADR-008）
+- ✅ Rust mutation testing（`cargo-mutants`、`--mutation`、ADR-009 / Phase 8）
+- ✅ Python mutation testing（`mutmut`、Phase 8b）
 - Go / JavaScript 対応（同じ `StageResults` パターンで追加可能）
-- Mutation Testing / Differential Testing
+- Go mutation testing（`gremlins`、Phase 8c）
 - 複数 AI API 連携（候補の自動生成）
 - コード類似度分析
 - GitHub Pull Request 連携
