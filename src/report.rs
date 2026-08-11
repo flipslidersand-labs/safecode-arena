@@ -91,60 +91,43 @@ fn mutation_cell(caught: usize, total: usize, outcome: &StageOutcome) -> String 
 fn render_summary_table(out: &mut String, evals: &[Evaluation]) {
     let has_mutation = evals.iter().any(|e| e.mutation_total > 0);
     out.push_str("## 比較サマリー\n\n");
-    if has_mutation {
-        out.push_str(
-            "| 順位 | 候補 | 合計 | 正誤 | 安全 | 性能 | 保守 | 資源 | コンパイル | テスト | Clippy | PropTest | Wasm | Mutation |\n",
-        );
-        out.push_str(
-            "| ---- | ---- | ---- | ---- | ---- | ---- | ---- | ---- | ---------- | ------ | ------ | -------- | ---- | -------- |\n",
-        );
-    } else {
-        out.push_str(
-            "| 順位 | 候補 | 合計 | 正誤 | 安全 | 性能 | 保守 | 資源 | コンパイル | テスト | Clippy | PropTest | Wasm |\n",
-        );
-        out.push_str(
-            "| ---- | ---- | ---- | ---- | ---- | ---- | ---- | ---- | ---------- | ------ | ------ | -------- | ---- |\n",
-        );
-    }
+    let mutation_col = if has_mutation { " Mutation |" } else { "" };
+    let mutation_sep = if has_mutation { " -------- |" } else { "" };
+    out.push_str(&format!(
+        "| 順位 | 候補 | 合計 | 正誤 | 安全 | 性能 | 保守 | 資源 | コンパイル | テスト | Clippy | PropTest | Wasm |{}\n",
+        mutation_col
+    ));
+    out.push_str(&format!(
+        "| ---- | ---- | ---- | ---- | ---- | ---- | ---- | ---- | ---------- | ------ | ------ | -------- | ---- |{}\n",
+        mutation_sep
+    ));
     for (i, e) in evals.iter().enumerate() {
-        if has_mutation {
-            out.push_str(&format!(
-                "| {} {} | {} | {:.1} | {:.1} | {:.1} | {:.1} | {:.1} | {:.1} | {} | {} | {} | {} | {} | {} |\n",
-                i + 1,
-                medal(i),
-                e.candidate_id,
-                e.score,
-                e.axes.correctness,
-                e.axes.security,
-                e.axes.performance,
-                e.axes.maintainability,
-                e.axes.resource_usage,
-                stage_cell(&e.compile),
-                stage_cell(&e.test),
-                lint_cell(&e.lint, e.lint_warnings),
-                stage_cell(&e.prop_test),
-                wasm_cell(&e.wasm, e.wasm_fuel_used),
-                mutation_cell(e.mutation_caught, e.mutation_total, &e.mutation),
-            ));
+        let mutation_cell_str = if has_mutation {
+            format!(
+                " {} |",
+                mutation_cell(e.mutation_caught, e.mutation_total, &e.mutation)
+            )
         } else {
-            out.push_str(&format!(
-                "| {} {} | {} | {:.1} | {:.1} | {:.1} | {:.1} | {:.1} | {:.1} | {} | {} | {} | {} | {} |\n",
-                i + 1,
-                medal(i),
-                e.candidate_id,
-                e.score,
-                e.axes.correctness,
-                e.axes.security,
-                e.axes.performance,
-                e.axes.maintainability,
-                e.axes.resource_usage,
-                stage_cell(&e.compile),
-                stage_cell(&e.test),
-                lint_cell(&e.lint, e.lint_warnings),
-                stage_cell(&e.prop_test),
-                wasm_cell(&e.wasm, e.wasm_fuel_used),
-            ));
-        }
+            String::new()
+        };
+        out.push_str(&format!(
+            "| {} {} | {} | {:.1} | {:.1} | {:.1} | {:.1} | {:.1} | {:.1} | {} | {} | {} | {} | {} |{}\n",
+            i + 1,
+            medal(i),
+            e.candidate_id,
+            e.score,
+            e.axes.correctness,
+            e.axes.security,
+            e.axes.performance,
+            e.axes.maintainability,
+            e.axes.resource_usage,
+            stage_cell(&e.compile),
+            stage_cell(&e.test),
+            lint_cell(&e.lint, e.lint_warnings),
+            stage_cell(&e.prop_test),
+            wasm_cell(&e.wasm, e.wasm_fuel_used),
+            mutation_cell_str,
+        ));
     }
     if let Some(best) = evals.first() {
         out.push_str(&format!(
