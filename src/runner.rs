@@ -102,64 +102,8 @@ pub fn run_stage_capture(
 /// 出力（stdout/stderr）は一時ファイルへリダイレクトする。パイプ
 /// バッファ溢れによるデッドロックを避けるためで、cargo の大量出力でも安全。
 /// 制限時間を超えたら子プロセスを kill して `TimedOut` を返す。
-pub fn run_stage(label: &str, mut command: std::process::Command, limit: Duration) -> StageOutcome {
-    // stderr/stdout を一時ファイルへ。stdout は捨て、stderr は失敗時に要約する。
-    let err_file = match tempfile::tempfile() {
-        Ok(f) => f,
-        Err(e) => {
-            return StageOutcome::Failed {
-                detail: format!("{label}: 一時ファイル生成失敗: {e}"),
-            }
-        }
-    };
-    let err_for_child = match err_file.try_clone() {
-        Ok(f) => f,
-        Err(e) => {
-            return StageOutcome::Failed {
-                detail: format!("{label}: ファイル複製失敗: {e}"),
-            }
-        }
-    };
-    command
-        .stdout(Stdio::null())
-        .stderr(Stdio::from(err_for_child));
-
-    let start = Instant::now();
-    let mut child = match command.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            return StageOutcome::Failed {
-                detail: format!("{label}: 起動失敗: {e}"),
-            }
-        }
-    };
-
-    match child.wait_timeout(limit) {
-        // 制限時間内に終了
-        Ok(Some(status)) => {
-            let elapsed = start.elapsed();
-            if status.success() {
-                StageOutcome::Passed {
-                    duration_ms: elapsed.as_millis() as u64,
-                }
-            } else {
-                StageOutcome::Failed {
-                    detail: summarize(err_file),
-                }
-            }
-        }
-        // タイムアウト → kill
-        Ok(None) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            StageOutcome::TimedOut {
-                limit_ms: limit.as_millis() as u64,
-            }
-        }
-        Err(e) => StageOutcome::Failed {
-            detail: format!("{label}: 待機失敗: {e}"),
-        },
-    }
+pub fn run_stage(label: &str, command: std::process::Command, limit: Duration) -> StageOutcome {
+    run_stage_capture(label, command, limit).0
 }
 
 #[cfg(test)]
