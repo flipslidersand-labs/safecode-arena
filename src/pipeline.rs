@@ -219,7 +219,7 @@ pub fn evaluate_candidate(
             wasm_opts,
             run_mutation,
         )?,
-        Language::Python => run_python_stages(root, candidate, timeout, tests_dir)?,
+        Language::Python => run_python_stages(root, candidate, timeout, tests_dir, run_mutation)?,
         Language::Go => run_go_stages(root, candidate, timeout, tests_dir)?,
         Language::JavaScript => run_js_stages(root, candidate, timeout, tests_dir)?,
     };
@@ -407,13 +407,14 @@ fn parse_mutants_json(stdout: &str) -> Option<(usize, usize)> {
     None
 }
 
-/// Python 候補: py_compile（構文チェック）→ pytest → ruff。
+/// Python 候補: py_compile（構文チェック）→ pytest → ruff → mutation（任意）。
 /// prop_test / wasm は非対応のため Skipped。
 fn run_python_stages(
     root: &Path,
     candidate: &Candidate,
     timeout: Duration,
     tests_dir: Option<&Path>,
+    run_mutation: bool,
 ) -> Result<StageResults> {
     fs::write(root.join("candidate.py"), &candidate.source).context("候補ソースの書込に失敗")?;
     if let Some(dir) = tests_dir {
@@ -446,6 +447,12 @@ fn run_python_stages(
     let (lint, lint_out) = runner::run_stage_capture("ruff", l, timeout);
     let lint_warnings = count_ruff_findings(&lint_out);
 
+    let (mutation, mutation_caught, mutation_total) = if run_mutation && test.is_passed() {
+        run_python_mutation(root, timeout)
+    } else {
+        (StageOutcome::Skipped, 0, 0)
+    };
+
     Ok(StageResults {
         compile,
         test,
@@ -454,10 +461,126 @@ fn run_python_stages(
         prop_test: StageOutcome::Skipped,
         wasm: StageOutcome::Skipped,
         wasm_fuel_used: None,
-        mutation: StageOutcome::Skipped,
-        mutation_caught: 0,
-        mutation_total: 0,
+        mutation,
+        mutation_caught,
+        mutation_total,
     })
+}
+
+/// `mutmut` で Python 候補のミューテーションテストを実行する。
+///
+/// `mutmut run` → `mutmut results` の 2 ステップで実行し、
+/// `parse_mutmut_results` で (caught, total) を取り出す。
+/// mutmut が PATH に無い場合は Skipped を返す。
+fn run_python_mutation(root: &Path, timeout: Duration) -> (StageOutcome, usize, usize) {
+    let mutmut_available = std::process::Command::new("mutmut")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !mutmut_available {
+        return (StageOutcome::Skipped, 0, 0);
+    }
+
+    // mutmut run — テストランナーとして pytest を明示指定
+    // exit 1 は survived ミュータントがあっても返るため、TimedOut 以外は続行する
+    let mutation_timeout = timeout * 3;
+    let mut run_cmd = Command::new("mutmut");
+    run_cmd
+        .args(["run", "--runner", "python -m pytest -x -q"])
+        .current_dir(root);
+    let (run_outcome, _) = runner::run_stage_capture("mutation-run", run_cmd, mutation_timeout);
+
+    if matches!(run_outcome, StageOutcome::TimedOut { .. }) {
+        return (run_outcome, 0, 0);
+    }
+
+    // mutmut results — 集計取得
+    let mut res_cmd = Command::new("mutmut");
+    res_cmd.arg("results").current_dir(root);
+    let (_, results_out) = runner::run_stage_capture("mutation-results", res_cmd, timeout);
+
+    match parse_mutmut_results(&results_out) {
+        Some((caught, total)) => {
+            let duration_ms = run_outcome
+                .duration_ms()
+                .unwrap_or(mutation_timeout.as_millis() as u64);
+            (StageOutcome::Passed { duration_ms }, caught, total)
+        }
+        None => (StageOutcome::Skipped, 0, 0),
+    }
+}
+
+/// `mutmut results` の出力から (caught, total) を取り出す。
+///
+/// mutmut 2.x の出力形式:
+/// ```text
+/// Survived mutants:
+/// 4, 7, 12
+///
+/// Killed mutants:
+/// 1, 2, 3, 5, 6
+/// ```
+/// ID をカンマ区切りで列挙したセクションを解析し、killed を caught、
+/// killed + survived を total として返す。
+/// セクションが両方とも空（ミュータント 0 件）のときは None。
+fn parse_mutmut_results(output: &str) -> Option<(usize, usize)> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Section {
+        None,
+        Killed,
+        Survived,
+    }
+
+    let mut killed = 0usize;
+    let mut survived = 0usize;
+    let mut section = Section::None;
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+        match trimmed {
+            "Killed mutants:" => {
+                section = Section::Killed;
+                continue;
+            }
+            "Survived mutants:" => {
+                section = Section::Survived;
+                continue;
+            }
+            // 別セクションの開始（Timeout / Suspicious など）
+            s if s.ends_with("mutants:") => {
+                section = Section::None;
+                continue;
+            }
+            "" => continue,
+            _ => {}
+        }
+
+        if section == Section::None {
+            continue;
+        }
+
+        // "1, 2, 3" のような ID 行を数える
+        let count = trimmed
+            .split(',')
+            .filter(|s| s.trim().parse::<usize>().is_ok())
+            .count();
+
+        match section {
+            Section::Killed => killed += count,
+            Section::Survived => survived += count,
+            Section::None => {}
+        }
+    }
+
+    let total = killed + survived;
+    if total > 0 {
+        Some((killed, total))
+    } else {
+        None
+    }
 }
 
 /// `staticcheck` が PATH に存在するか確認する。
