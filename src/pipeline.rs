@@ -219,7 +219,7 @@ pub fn evaluate_candidate(
             wasm_opts,
             run_mutation,
         )?,
-        Language::Python => run_python_stages(root, candidate, timeout, tests_dir)?,
+        Language::Python => run_python_stages(root, candidate, timeout, tests_dir, run_mutation)?,
         Language::Go => run_go_stages(root, candidate, timeout, tests_dir, run_mutation)?,
         Language::JavaScript => run_js_stages(root, candidate, timeout, tests_dir)?,
     };
@@ -408,6 +408,7 @@ fn run_python_stages(
     candidate: &Candidate,
     timeout: Duration,
     tests_dir: Option<&Path>,
+    run_mutation: bool,
 ) -> Result<StageResults> {
     fs::write(root.join("candidate.py"), &candidate.source).context("候補ソースの書込に失敗")?;
     if let Some(dir) = tests_dir {
@@ -440,7 +441,7 @@ fn run_python_stages(
     let (lint, lint_out) = runner::run_stage_capture("ruff", l, timeout);
     let lint_warnings = count_ruff_findings(&lint_out);
 
-    let (mutation, mutation_caught, mutation_total) = if test.is_passed() {
+    let (mutation, mutation_caught, mutation_total) = if run_mutation && test.is_passed() {
         run_python_mutation(root, timeout)
     } else {
         (StageOutcome::Skipped, 0, 0)
