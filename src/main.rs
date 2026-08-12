@@ -167,33 +167,39 @@ fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
     scoring::assign_performance(&mut evals, &rubric);
     let ranked = scoring::rank(evals);
 
-    // 永続化 + リグレッション検出
-    if let Some(db_path) = args.db.as_deref() {
-        persist_and_report_regressions(db_path, &ranked, args.regression_threshold)?;
-    }
-
     let rendered = match args.format {
         Format::Markdown => report::render(&ranked),
         Format::Json => serde_json::to_string_pretty(&ranked)?,
         Format::Html => report::render_html(&ranked),
     };
-    match args.out {
+    match args.out.as_deref() {
         Some(path) => {
-            std::fs::write(&path, rendered)?;
+            std::fs::write(path, &rendered)?;
             eprintln!("レポートを書き出しました: {path}");
         }
         None => print!("{rendered}"),
+    }
+
+    // 永続化 + リグレッション検出（出力後に実行して PR コメント用 report が確実に書かれるようにする）
+    if let Some(db_path) = args.db.as_deref() {
+        let has_regression =
+            persist_and_report_regressions(db_path, &ranked, args.regression_threshold)?;
+        if has_regression {
+            std::process::exit(1);
+        }
     }
     Ok(())
 }
 
 /// 現在の評価を保存する前に直近 run と比較し、後退した候補を stderr に警告する。
+/// リグレッションが 1 件以上あれば `true` を返す。
 fn persist_and_report_regressions(
     db_path: &str,
     ranked: &[Evaluation],
     threshold: f64,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     let mut s = Store::open(Path::new(db_path))?;
+    let mut has_regression = false;
 
     if let Some(prev_id) = s.latest_run_id()? {
         let prev = s.run_scores(prev_id)?;
@@ -201,6 +207,7 @@ fn persist_and_report_regressions(
         if regs.is_empty() {
             eprintln!("リグレッションなし（直近 run #{prev_id} と比較）");
         } else {
+            has_regression = true;
             eprintln!("⚠️  リグレッション検出（直近 run #{prev_id} 比）:");
             for r in &regs {
                 eprintln!(
@@ -217,7 +224,7 @@ fn persist_and_report_regressions(
     let created_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let run_id = s.save_run(&created_at, ranked)?;
     eprintln!("run #{run_id} を保存しました: {db_path}");
-    Ok(())
+    Ok(has_regression)
 }
 
 fn run_history(db_path: &str) -> anyhow::Result<()> {

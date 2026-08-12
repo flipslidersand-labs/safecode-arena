@@ -170,6 +170,7 @@ struct StageResults {
     mutation: StageOutcome,
     mutation_caught: usize,
     mutation_total: usize,
+    audit_findings: usize,
 }
 
 impl StageResults {
@@ -186,6 +187,7 @@ impl StageResults {
             mutation: StageOutcome::Skipped,
             mutation_caught: 0,
             mutation_total: 0,
+            audit_findings: 0,
         }
     }
 }
@@ -219,8 +221,8 @@ pub fn evaluate_candidate(
             wasm_opts,
             run_mutation,
         )?,
-        Language::Python => run_python_stages(root, candidate, timeout, tests_dir)?,
-        Language::Go => run_go_stages(root, candidate, timeout, tests_dir)?,
+        Language::Python => run_python_stages(root, candidate, timeout, tests_dir, run_mutation)?,
+        Language::Go => run_go_stages(root, candidate, timeout, tests_dir, run_mutation)?,
         Language::JavaScript => run_js_stages(root, candidate, timeout, tests_dir)?,
     };
 
@@ -241,6 +243,7 @@ fn assemble(candidate: &Candidate, r: StageResults, rubric: &Rubric) -> Evaluati
         rubric,
         r.mutation_caught,
         r.mutation_total,
+        r.audit_findings,
     );
     let score = axes.total();
     Evaluation {
@@ -255,6 +258,7 @@ fn assemble(candidate: &Candidate, r: StageResults, rubric: &Rubric) -> Evaluati
         mutation: r.mutation,
         mutation_caught: r.mutation_caught,
         mutation_total: r.mutation_total,
+        audit_findings: r.audit_findings,
         axes,
         score,
     }
@@ -320,6 +324,8 @@ fn run_rust_stages(
         (StageOutcome::Skipped, 0, 0)
     };
 
+    let audit_findings = run_cargo_audit(root, timeout);
+
     Ok(StageResults {
         compile,
         test,
@@ -331,6 +337,7 @@ fn run_rust_stages(
         mutation,
         mutation_caught,
         mutation_total,
+        audit_findings,
     })
 }
 
@@ -408,6 +415,7 @@ fn run_python_stages(
     candidate: &Candidate,
     timeout: Duration,
     tests_dir: Option<&Path>,
+    run_mutation: bool,
 ) -> Result<StageResults> {
     fs::write(root.join("candidate.py"), &candidate.source).context("候補ソースの書込に失敗")?;
     if let Some(dir) = tests_dir {
@@ -440,7 +448,7 @@ fn run_python_stages(
     let (lint, lint_out) = runner::run_stage_capture("ruff", l, timeout);
     let lint_warnings = count_ruff_findings(&lint_out);
 
-    let (mutation, mutation_caught, mutation_total) = if test.is_passed() {
+    let (mutation, mutation_caught, mutation_total) = if run_mutation && test.is_passed() {
         run_python_mutation(root, timeout)
     } else {
         (StageOutcome::Skipped, 0, 0)
@@ -457,6 +465,7 @@ fn run_python_stages(
         mutation,
         mutation_caught,
         mutation_total,
+        audit_findings: 0,
     })
 }
 
@@ -530,6 +539,7 @@ fn run_go_stages(
     candidate: &Candidate,
     timeout: Duration,
     tests_dir: Option<&Path>,
+    run_mutation: bool,
 ) -> Result<StageResults> {
     // go.mod を生成（依存なしの最小モジュール）
     let go_mod = "module candidate\n\ngo 1.22\n";
@@ -569,6 +579,12 @@ fn run_go_stages(
         (outcome, count_go_vet_findings(&out))
     };
 
+    let (mutation, mutation_caught, mutation_total) = if run_mutation && test.is_passed() {
+        run_go_mutation(root, timeout)
+    } else {
+        (StageOutcome::Skipped, 0, 0)
+    };
+
     Ok(StageResults {
         compile,
         test,
@@ -577,10 +593,66 @@ fn run_go_stages(
         prop_test: StageOutcome::Skipped,
         wasm: StageOutcome::Skipped,
         wasm_fuel_used: None,
-        mutation: StageOutcome::Skipped,
-        mutation_caught: 0,
-        mutation_total: 0,
+        mutation,
+        mutation_caught,
+        mutation_total,
+        audit_findings: 0,
     })
+}
+
+/// `gremlins` で Go 候補のミューテーションテストを実行する。
+///
+/// - `gremlins` が PATH にない場合は `(Skipped, 0, 0)` を返す（減点なし）。
+fn run_go_mutation(root: &Path, timeout: Duration) -> (StageOutcome, usize, usize) {
+    let gremlins_available = std::process::Command::new("gremlins")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !gremlins_available {
+        return (StageOutcome::Skipped, 0, 0);
+    }
+
+    let json_out = "gremlins.json";
+    let mutation_timeout = timeout * 3;
+
+    let mut cmd = Command::new("gremlins");
+    cmd.args(["unleash", "--output", json_out, "./..."])
+        .current_dir(root);
+    let (outcome, _) = runner::run_stage_capture("mutation", cmd, mutation_timeout);
+
+    if matches!(outcome, StageOutcome::TimedOut { .. }) {
+        return (outcome, 0, 0);
+    }
+
+    match fs::read_to_string(root.join(json_out))
+        .ok()
+        .and_then(|s| parse_gremlins_json(&s))
+    {
+        Some((caught, total)) => {
+            let duration_ms = outcome
+                .duration_ms()
+                .unwrap_or(mutation_timeout.as_millis() as u64);
+            (StageOutcome::Passed { duration_ms }, caught, total)
+        }
+        None => (StageOutcome::Skipped, 0, 0),
+    }
+}
+
+/// `gremlins unleash --output` の JSON から (caught, total) を取り出す。
+///
+/// gremlins JSON フォーマット: `{"mutants_killed": N, "mutants_total": N, ...}`
+fn parse_gremlins_json(content: &str) -> Option<(usize, usize)> {
+    #[derive(serde::Deserialize)]
+    struct GremlinsOutput {
+        mutants_killed: usize,
+        mutants_total: usize,
+    }
+    serde_json::from_str::<GremlinsOutput>(content)
+        .ok()
+        .map(|g| (g.mutants_killed, g.mutants_total))
 }
 
 /// JavaScript 候補: node --check（構文検証）→ node --test → ESLint（あれば）。
@@ -634,5 +706,51 @@ fn run_js_stages(
         mutation: StageOutcome::Skipped,
         mutation_caught: 0,
         mutation_total: 0,
+        audit_findings: 0,
     })
+}
+
+/// `cargo audit --json` で Rust 候補の脆弱性をスキャンし、検出件数を返す。
+///
+/// - `cargo audit` が PATH にない場合や `Cargo.lock` が存在しない場合は 0 を返す（減点なし）。
+fn run_cargo_audit(root: &Path, timeout: Duration) -> usize {
+    let audit_available = std::process::Command::new("cargo")
+        .args(["audit", "--version"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !audit_available {
+        return 0;
+    }
+    if !root.join("Cargo.lock").exists() {
+        return 0;
+    }
+
+    let mut cmd = Command::new("cargo");
+    cmd.args(["audit", "--json"]).current_dir(root);
+    let (_outcome, stdout) = runner::run_stage_capture("audit", cmd, timeout);
+    parse_audit_json(&stdout).unwrap_or(0)
+}
+
+/// `cargo audit --json` の出力から脆弱性件数を取り出す。
+fn parse_audit_json(stdout: &str) -> Option<usize> {
+    #[derive(serde::Deserialize)]
+    struct Vulnerabilities {
+        count: usize,
+    }
+    #[derive(serde::Deserialize)]
+    struct AuditOutput {
+        vulnerabilities: Vulnerabilities,
+    }
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.starts_with('{') {
+            if let Ok(a) = serde_json::from_str::<AuditOutput>(line) {
+                return Some(a.vulnerabilities.count);
+            }
+        }
+    }
+    None
 }

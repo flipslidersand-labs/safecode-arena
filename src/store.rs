@@ -176,6 +176,7 @@ mod tests {
             mutation: StageOutcome::Skipped,
             mutation_caught: 0,
             mutation_total: 0,
+            audit_findings: 0,
             axes: AxisScores::default(),
             score,
         }

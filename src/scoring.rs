@@ -55,6 +55,7 @@ pub fn axes_without_performance(
     rubric: &Rubric,
     mutation_caught: usize,
     mutation_total: usize,
+    audit_findings: usize,
 ) -> AxisScores {
     // mutation が実行された場合は重みを再配分する。
     // Skipped（total == 0）の場合は従来通り compile(40%) + test(40%) + prop_test(20%)。
@@ -93,8 +94,10 @@ pub fn axes_without_performance(
     let (security, maintainability) = if compile.is_passed() {
         let unsafe_ratio = metrics.security_ratio();
         let lint_sec = lint_security_ratio(lint, lint_warnings);
-        // security = unsafe ヒューリスティック(50%) + lint(50%)
-        let sec = rubric.security * (unsafe_ratio * 0.5 + lint_sec * 0.5);
+        // audit: 脆弱性 1 件ごとに 0.25 減点、4 件以上で 0
+        let audit_sec = (1.0 - 0.25 * audit_findings as f64).clamp(0.0, 1.0);
+        // security = unsafe(40%) + lint(40%) + audit(20%)
+        let sec = rubric.security * (unsafe_ratio * 0.4 + lint_sec * 0.4 + audit_sec * 0.2);
 
         let heuristic_maint = metrics.maintainability_ratio();
         let lint_maint = lint_maintainability_ratio(lint_warnings);
@@ -184,6 +187,7 @@ mod tests {
             &Rubric::default(),
             0,
             0,
+            0,
         )
     }
 
@@ -207,6 +211,7 @@ mod tests {
             &StageOutcome::Skipped,
             &metrics("fn f(){}"),
             &r,
+            0,
             0,
             0,
         );
@@ -241,6 +246,7 @@ mod tests {
             &r,
             0,
             0,
+            0,
         );
         let with_warn = axes_without_performance(
             &passed(1),
@@ -251,6 +257,7 @@ mod tests {
             &StageOutcome::Skipped,
             &metrics("fn f(){}"),
             &r,
+            0,
             0,
             0,
         );
@@ -270,6 +277,7 @@ mod tests {
             &Rubric::default(),
             0,
             0,
+            0,
         );
         let lint_fail = axes_without_performance(
             &passed(1),
@@ -282,10 +290,11 @@ mod tests {
             &Rubric::default(),
             0,
             0,
+            0,
         );
-        // lint failed → lint_sec = 0, unsafe clean → unsafe_ratio = 1.0
-        // security = rubric.security * (1.0*0.5 + 0.0*0.5) = rubric.security * 0.5
-        assert!((lint_fail.security - clean.security * 0.5).abs() < 1e-9);
+        // lint failed → lint_sec = 0, unsafe clean → unsafe_ratio = 1.0, audit_sec = 1.0
+        // security = rubric.security * (1.0*0.4 + 0.0*0.4 + 1.0*0.2) = rubric.security * 0.6
+        assert!((lint_fail.security - clean.security * 0.6).abs() < 1e-9);
     }
 
     #[test]
@@ -302,6 +311,7 @@ mod tests {
             &r,
             0,
             0,
+            0,
         );
         let no_wasm = axes_without_performance(
             &passed(1),
@@ -312,6 +322,7 @@ mod tests {
             &StageOutcome::Skipped, // wasm not run
             &metrics("fn f(){}"),
             &r,
+            0,
             0,
             0,
         );
@@ -334,6 +345,7 @@ mod tests {
             mutation: StageOutcome::Skipped,
             mutation_caught: 0,
             mutation_total: 0,
+            audit_findings: 0,
             axes: AxisScores::default(),
             score: 0.0,
         };
@@ -359,6 +371,7 @@ mod tests {
             mutation: StageOutcome::Skipped,
             mutation_caught: 0,
             mutation_total: 0,
+            audit_findings: 0,
             axes: AxisScores::default(),
             score: 0.0,
         }];
@@ -380,6 +393,7 @@ mod tests {
             mutation: StageOutcome::Skipped,
             mutation_caught: 0,
             mutation_total: 0,
+            audit_findings: 0,
             axes: AxisScores::default(),
             score: s,
         };
@@ -405,6 +419,7 @@ mod tests {
             &r,
             0, // mutation_caught
             0, // mutation_total → Skipped
+            0,
         );
         assert_eq!(a.correctness, r.correctness * 0.8);
     }
@@ -424,6 +439,7 @@ mod tests {
             &r,
             12, // mutation_caught
             12, // mutation_total
+            0,
         );
         assert!((a.correctness - r.correctness * 0.85).abs() < 1e-9);
     }
@@ -443,6 +459,7 @@ mod tests {
             &r,
             0,  // mutation_caught
             12, // mutation_total → 0%
+            0,
         );
         assert!((a.correctness - r.correctness * 0.60).abs() < 1e-9);
     }
@@ -462,6 +479,7 @@ mod tests {
             &r,
             9,  // mutation_caught
             12, // mutation_total
+            0,
         );
         let expected = r.correctness * (0.30 + 0.30 + 0.25 * 0.75);
         assert!((a.correctness - expected).abs() < 1e-9);

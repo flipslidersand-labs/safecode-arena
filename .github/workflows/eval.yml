@@ -1,0 +1,89 @@
+name: safecode evaluate
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Evaluate examples (Rust candidates)
+        id: evaluate
+        run: |
+          ./target/release/safecode evaluate \
+            examples/good.rs \
+            examples/buggy.rs \
+            --format markdown \
+            --out /tmp/report.md \
+            --db /tmp/safecode.db \
+            --regression-threshold 1.0
+        continue-on-error: true
+
+      - name: Post report as PR comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body;
+            try {
+              body = fs.readFileSync('/tmp/report.md', 'utf8');
+            } catch {
+              body = '> safecode: レポートの生成に失敗しました。';
+            }
+            const header = '<!-- safecode-eval -->';
+            const fullBody = `${header}\n## safecode evaluate 結果\n\n${body}`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body.includes(header));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body: fullBody,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: fullBody,
+              });
+            }
+
+      - name: Fail on regression
+        if: steps.evaluate.outcome == 'failure'
+        run: |
+          echo "::error::スコアリグレッションが検出されました。PR コメントのレポートを確認してください。"
+          exit 1
