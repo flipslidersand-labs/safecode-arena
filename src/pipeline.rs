@@ -220,7 +220,7 @@ pub fn evaluate_candidate(
             run_mutation,
         )?,
         Language::Python => run_python_stages(root, candidate, timeout, tests_dir)?,
-        Language::Go => run_go_stages(root, candidate, timeout, tests_dir)?,
+        Language::Go => run_go_stages(root, candidate, timeout, tests_dir, run_mutation)?,
         Language::JavaScript => run_js_stages(root, candidate, timeout, tests_dir)?,
     };
 
@@ -530,6 +530,7 @@ fn run_go_stages(
     candidate: &Candidate,
     timeout: Duration,
     tests_dir: Option<&Path>,
+    run_mutation: bool,
 ) -> Result<StageResults> {
     // go.mod を生成（依存なしの最小モジュール）
     let go_mod = "module candidate\n\ngo 1.22\n";
@@ -569,7 +570,7 @@ fn run_go_stages(
         (outcome, count_go_vet_findings(&out))
     };
 
-    let (mutation, mutation_caught, mutation_total) = if test.is_passed() {
+    let (mutation, mutation_caught, mutation_total) = if run_mutation && test.is_passed() {
         run_go_mutation(root, timeout)
     } else {
         (StageOutcome::Skipped, 0, 0)
@@ -618,8 +619,8 @@ fn run_go_mutation(root: &Path, timeout: Duration) -> (StageOutcome, usize, usiz
         return (outcome, 0, 0);
     }
 
-    // gremlins は survived ミュータントがあっても非ゼロ終了するため、
-    // JSON が読めれば成功扱いにする
+    // gremlins は threshold 未指定時に exit 0（survived があっても同様）。
+    // JSON が読めれば caught/total を取り出す。
     match fs::read_to_string(root.join(json_out))
         .ok()
         .and_then(|s| parse_gremlins_json(&s))
@@ -754,7 +755,7 @@ mod tests {
         };
         let dir = tempfile::tempdir().unwrap();
         let results =
-            run_go_stages(dir.path(), &candidate, Duration::from_secs(30), None).unwrap();
+            run_go_stages(dir.path(), &candidate, Duration::from_secs(30), None, true).unwrap();
         assert!(matches!(results.compile, StageOutcome::Failed { .. }));
         assert!(
             matches!(results.mutation, StageOutcome::Skipped),
@@ -785,7 +786,7 @@ mod tests {
         };
         let dir = tempfile::tempdir().unwrap();
         let results =
-            run_go_stages(dir.path(), &candidate, Duration::from_secs(30), None).unwrap();
+            run_go_stages(dir.path(), &candidate, Duration::from_secs(30), None, true).unwrap();
         assert!(
             matches!(results.mutation, StageOutcome::Skipped),
             "gremlins が無い場合は mutation は Skipped"
