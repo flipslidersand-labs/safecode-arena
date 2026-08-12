@@ -192,6 +192,8 @@ struct StageResults {
     mutation_total: usize,
     audit_findings: usize,
     bench_ns: Option<u64>,
+    reasoning_score: Option<f64>,
+    reasoning_comment: Option<String>,
 }
 
 impl StageResults {
@@ -210,6 +212,8 @@ impl StageResults {
             mutation_total: 0,
             audit_findings: 0,
             bench_ns: None,
+            reasoning_score: None,
+            reasoning_comment: None,
         }
     }
 }
@@ -221,6 +225,7 @@ impl StageResults {
 /// - `prop_tests_dir`: proptest ファイルのディレクトリ（Rust のみ）。
 /// - `wasm_opts`: Wasm サンドボックス実行のオプション（Rust のみ）。`entry` 指定時のみ実行。
 /// - `run_mutation`: true のとき Rust 候補に対して `cargo mutants` を実行する（デフォルト off）。
+/// - `run_llm_review`: true のとき LLM セマンティックレビューを実行する（デフォルト off）。
 pub fn evaluate_candidate(
     candidate: &Candidate,
     timeout: Duration,
@@ -229,6 +234,7 @@ pub fn evaluate_candidate(
     prop_tests_dir: Option<&Path>,
     wasm_opts: &WasmOptions,
     run_mutation: bool,
+    run_llm_review: bool,
 ) -> Result<Evaluation> {
     let dir = tempfile::tempdir().context("一時ディレクトリの生成に失敗")?;
     let root = dir.path();
@@ -246,6 +252,23 @@ pub fn evaluate_candidate(
         Language::Python => run_python_stages(root, candidate, timeout, tests_dir, run_mutation)?,
         Language::Go => run_go_stages(root, candidate, timeout, tests_dir, run_mutation)?,
         Language::JavaScript => run_js_stages(root, candidate, timeout, tests_dir)?,
+    };
+
+    // LLM セマンティックレビュー（オプション）
+    let (reasoning_score, reasoning_comment) = if run_llm_review {
+        let test_passed = results.test.is_passed();
+        match crate::llm::review(&candidate.source, test_passed) {
+            Some(r) => (Some(r.score), Some(r.comment)),
+            None => (None, None),
+        }
+    } else {
+        (None, None)
+    };
+
+    let results = StageResults {
+        reasoning_score,
+        reasoning_comment,
+        ..results
     };
 
     Ok(assemble(candidate, results, rubric))
@@ -282,6 +305,13 @@ fn assemble(candidate: &Candidate, r: StageResults, rubric: &Rubric) -> Evaluati
         mutation_total: r.mutation_total,
         audit_findings: r.audit_findings,
         bench_ns: r.bench_ns,
+        reasoning: if r.reasoning_score.is_some() {
+            StageOutcome::Passed { duration_ms: 0 }
+        } else {
+            StageOutcome::Skipped
+        },
+        reasoning_score: r.reasoning_score.unwrap_or(0.0),
+        reasoning_comment: r.reasoning_comment,
         axes,
         score,
     }
@@ -378,6 +408,8 @@ fn run_rust_stages(
         mutation_total,
         audit_findings,
         bench_ns,
+        reasoning_score: None,
+        reasoning_comment: None,
     })
 }
 
@@ -507,6 +539,8 @@ fn run_python_stages(
         mutation_total,
         audit_findings: 0,
         bench_ns: None,
+        reasoning_score: None,
+        reasoning_comment: None,
     })
 }
 
@@ -637,6 +671,8 @@ fn run_go_stages(
         mutation_total,
         audit_findings: 0,
         bench_ns: None,
+        reasoning_score: None,
+        reasoning_comment: None,
     })
 }
 
@@ -748,6 +784,8 @@ fn run_js_stages(
         mutation_total: 0,
         audit_findings: 0,
         bench_ns: None,
+        reasoning_score: None,
+        reasoning_comment: None,
     })
 }
 

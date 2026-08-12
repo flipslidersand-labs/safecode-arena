@@ -178,6 +178,9 @@ mod tests {
             mutation_total: 0,
             audit_findings: 0,
             bench_ns: None,
+            reasoning: StageOutcome::Skipped,
+            reasoning_score: 0.0,
+            reasoning_comment: None,
             axes: AxisScores::default(),
             score,
         }

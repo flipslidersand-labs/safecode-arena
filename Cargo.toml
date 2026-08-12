@@ -33,6 +33,8 @@ chrono = { version = "0.4", features = ["serde"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 wasmtime = "46.0.0"
 wasmtime-wasi = "46.0.0"
+# LLM レビュー（phase14）— 軽量 HTTP クライアント
+ureq = { version = "2", features = ["json"] }
 
 # --- 発展フェーズ用（未使用。Phase が進んだら有効化） ---
 # wasmtime = "29"        # WASI サンドボックス

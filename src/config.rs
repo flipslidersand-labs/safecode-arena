@@ -36,6 +36,9 @@ pub struct Rubric {
     pub performance: f64,
     pub maintainability: f64,
     pub resource_usage: f64,
+    /// LLM セマンティックレビュー軸の重み（既定 0 = 無効）。
+    #[serde(default)]
+    pub reasoning: f64,
 }
 
 impl Default for Rubric {
@@ -46,6 +49,7 @@ impl Default for Rubric {
             performance: 15.0,
             maintainability: 10.0,
             resource_usage: 5.0,
+            reasoning: 0.0,
         }
     }
 }
@@ -85,6 +89,8 @@ struct LangWeights {
     maintainability: Option<f64>,
     #[serde(default)]
     resource_usage: Option<f64>,
+    #[serde(default)]
+    reasoning: Option<f64>,
     #[serde(default)]
     rust: Option<Rubric>,
     #[serde(default)]
@@ -138,6 +144,7 @@ impl Config {
                 performance: w.performance.unwrap_or(base.performance),
                 maintainability: w.maintainability.unwrap_or(base.maintainability),
                 resource_usage: w.resource_usage.unwrap_or(base.resource_usage),
+                reasoning: w.reasoning.unwrap_or(base.reasoning),
             })
             .unwrap_or(base);
 

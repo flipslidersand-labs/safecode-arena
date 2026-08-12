@@ -78,6 +78,8 @@ pub struct AxisScores {
     pub performance: f64,
     pub maintainability: f64,
     pub resource_usage: f64,
+    /// LLM セマンティックレビュー軸（phase14）。--llm-review 未指定時は 0。
+    pub reasoning: f64,
 }
 
 impl AxisScores {
@@ -88,6 +90,7 @@ impl AxisScores {
             + self.performance
             + self.maintainability
             + self.resource_usage
+            + self.reasoning
     }
 }
 
@@ -117,6 +120,12 @@ pub struct Evaluation {
     pub audit_findings: usize,
     /// Criterion / #[bench] ベンチマークの中央値 (ns)。ベンチ未実行は None。
     pub bench_ns: Option<u64>,
+    /// LLM セマンティックレビューの結果。--llm-review 未指定時は Skipped。
+    pub reasoning: StageOutcome,
+    /// LLM が返した 0.0–1.0 スコア。reasoning が Passed のときのみ意味を持つ。
+    pub reasoning_score: f64,
+    /// LLM コメント（最大 120 字）。
+    pub reasoning_comment: Option<String>,
     /// 軸別の獲得点。
     pub axes: AxisScores,
     /// 0.0〜100.0 の総合スコア（= axes.total()）。

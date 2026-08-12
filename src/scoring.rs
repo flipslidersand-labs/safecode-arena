@@ -122,7 +122,20 @@ pub fn axes_without_performance(
         maintainability,
         performance: 0.0,
         resource_usage,
+        reasoning: 0.0, // assign_reasoning() で後から付与
     }
+}
+
+/// LLM レビュースコアから reasoning 軸を付与する。
+///
+/// `llm_score`: 0.0–1.0。`rubric.reasoning` が 0 のときは何もしない。
+/// 付与後、`score` を `axes.total()` で再計算する。
+pub fn assign_reasoning(eval: &mut Evaluation, llm_score: f64, rubric: &Rubric) {
+    if rubric.reasoning <= 0.0 {
+        return;
+    }
+    eval.axes.reasoning = rubric.reasoning * llm_score.clamp(0.0, 1.0);
+    eval.score = eval.axes.total();
 }
 
 /// 候補集合の compile+test 所要時間を相対比較し、performance 軸を付与する。
@@ -356,6 +369,9 @@ mod tests {
             mutation_total: 0,
             audit_findings: 0,
             bench_ns: None,
+            reasoning: StageOutcome::Skipped,
+            reasoning_score: 0.0,
+            reasoning_comment: None,
             axes: AxisScores::default(),
             score: 0.0,
         };
@@ -383,6 +399,9 @@ mod tests {
             mutation_total: 0,
             audit_findings: 0,
             bench_ns: None,
+            reasoning: StageOutcome::Skipped,
+            reasoning_score: 0.0,
+            reasoning_comment: None,
             axes: AxisScores::default(),
             score: 0.0,
         }];
@@ -406,6 +425,9 @@ mod tests {
             mutation_total: 0,
             audit_findings: 0,
             bench_ns: None,
+            reasoning: StageOutcome::Skipped,
+            reasoning_score: 0.0,
+            reasoning_comment: None,
             axes: AxisScores::default(),
             score: s,
         };
@@ -515,6 +537,9 @@ mod tests {
                 mutation_total: 0,
                 audit_findings: 0,
                 bench_ns: bench,
+                reasoning: StageOutcome::Skipped,
+                reasoning_score: 0.0,
+                reasoning_comment: None,
                 axes: AxisScores::default(),
                 score: 0.0,
             };

@@ -73,6 +73,10 @@ enum Command {
         /// 実行時間が長いためデフォルト off。cargo-mutants が PATH にない場合は Skipped 扱い。
         #[arg(long)]
         mutation: bool,
+        /// LLM セマンティックレビューを実行して reasoning 軸を採点する。
+        /// SAFECODE_LLM_BACKEND=claude|ollama で切り替え（既定 claude）。
+        #[arg(long)]
+        llm_review: bool,
     },
     /// 保存済みの run 履歴を一覧表示する。
     History {
@@ -99,6 +103,7 @@ fn main() -> anyhow::Result<()> {
             wasm_fuel,
             wasm_max_memory_mb,
             mutation,
+            llm_review,
         } => run_evaluate(EvaluateArgs {
             candidates,
             tests,
@@ -113,6 +118,7 @@ fn main() -> anyhow::Result<()> {
             wasm_fuel,
             wasm_max_memory_mb,
             mutation,
+            llm_review,
         }),
         Command::History { db } => run_history(&db),
     }
@@ -133,6 +139,7 @@ struct EvaluateArgs {
     wasm_fuel: u64,
     wasm_max_memory_mb: usize,
     mutation: bool,
+    llm_review: bool,
 }
 
 fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
@@ -161,6 +168,7 @@ fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
             prop_tests_dir,
             &wasm_opts,
             args.mutation,
+            args.llm_review,
         )?);
     }
 
