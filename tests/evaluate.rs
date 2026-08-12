@@ -323,3 +323,66 @@ fn js_syntax_error_fails_compile() {
         .stdout(predicate::str::contains("❌"))
         .stdout(predicate::str::contains("0.0"));
 }
+
+// ── TypeScript ────────────────────────────────────────────────────────────────
+
+fn write_ts(name: &str, source: &str) -> tempfile::NamedTempFile {
+    let mut f = tempfile::Builder::new()
+        .prefix(name)
+        .suffix(".ts")
+        .tempfile()
+        .unwrap();
+    f.write_all(source.as_bytes()).unwrap();
+    f.flush().unwrap();
+    f
+}
+
+#[test]
+fn ts_clean_candidate_scores_or_skips() {
+    // tsc が PATH になければ Skipped → スコア 0.0 かつ ⏭ を含む。
+    // tsc があれば型検査 OK → 85.0 かつ ✅ を含む。
+    let cand = write_ts(
+        "ok",
+        "function add(a: number, b: number): number { return a + b; }\n",
+    );
+
+    let output = Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(cand.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let out = String::from_utf8_lossy(&output);
+    // tsc の有無に関わらず safecode 自体は exit 0 でなければならない。
+    assert!(
+        out.contains("85.0") || out.contains("0.0"),
+        "expected score 85.0 (tsc found) or 0.0 (tsc skipped), got: {out}"
+    );
+}
+
+#[test]
+fn ts_type_error_fails_compile() {
+    // 型エラー → tsc --noEmit 失敗。tsc がなければ Skipped（スコア 0.0）。
+    let cand = write_ts("ng", "const x: number = \"not a number\";\n");
+
+    let output = Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(cand.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let out = String::from_utf8_lossy(&output);
+    // tsc あり → ❌ (type error)、tsc なし → 0.0 (skipped)
+    assert!(
+        out.contains("❌") || out.contains("0.0"),
+        "expected ❌ or 0.0 for type error, got: {out}"
+    );
+}

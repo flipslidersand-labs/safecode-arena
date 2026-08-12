@@ -252,6 +252,7 @@ pub fn evaluate_candidate(
         Language::Python => run_python_stages(root, candidate, timeout, tests_dir, run_mutation)?,
         Language::Go => run_go_stages(root, candidate, timeout, tests_dir, run_mutation)?,
         Language::JavaScript => run_js_stages(root, candidate, timeout, tests_dir)?,
+        Language::TypeScript => run_ts_stages(root, candidate, timeout, tests_dir)?,
     };
 
     // LLM セマンティックレビュー（オプション）
@@ -786,6 +787,94 @@ fn run_js_stages(
         bench_ns: None,
         reasoning_score: None,
         reasoning_comment: None,
+    })
+}
+
+/// `tsc` が PATH に存在するか確認する。
+fn tsc_available() -> bool {
+    std::process::Command::new("tsc")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// TypeScript 候補: tsc --noEmit（型検査）→ tsc + node --test（テスト）→ ESLint（あれば）。
+/// prop_test / wasm / mutation は非対応のため Skipped。
+/// `tsc` が PATH にない場合はコンパイル Skipped（減点なし）。
+fn run_ts_stages(
+    root: &Path,
+    candidate: &Candidate,
+    timeout: Duration,
+    tests_dir: Option<&Path>,
+) -> Result<StageResults> {
+    // 最小 tsconfig（strict + CommonJS 出力）
+    let tsconfig = r#"{"compilerOptions":{"target":"ES2022","module":"CommonJS","strict":true,"outDir":"dist"},"include":["*.ts"]}"#;
+    fs::write(root.join("tsconfig.json"), tsconfig).context("tsconfig.json の書込に失敗")?;
+    fs::write(root.join("candidate.ts"), &candidate.source).context("候補ソースの書込に失敗")?;
+    if let Some(dir) = tests_dir {
+        copy_ext(dir, root, "ts")?;
+    }
+
+    if !tsc_available() {
+        return Ok(StageResults {
+            compile: StageOutcome::Skipped,
+            test: StageOutcome::Skipped,
+            lint: StageOutcome::Skipped,
+            lint_warnings: 0,
+            prop_test: StageOutcome::Skipped,
+            wasm: StageOutcome::Skipped,
+            wasm_fuel_used: None,
+            mutation: StageOutcome::Skipped,
+            mutation_caught: 0,
+            mutation_total: 0,
+            audit_findings: 0,
+            bench_ns: None,
+        });
+    }
+
+    // compile: 型検査のみ（JS 出力なし）
+    let mut c = Command::new("tsc");
+    c.args(["--noEmit"]).current_dir(root);
+    let compile = runner::run_stage("compile", c, timeout);
+    if !compile.is_passed() {
+        return Ok(StageResults::skipped_after_compile(compile));
+    }
+
+    // test: JS にトランスパイルしてから node --test で実行
+    let mut t = Command::new("sh");
+    t.arg("-c")
+        .arg(r#"tsc && node --test dist/candidate.js $(ls dist/*.test.js 2>/dev/null) 1>&2"#)
+        .current_dir(root);
+    let test = runner::run_stage("test", t, timeout);
+
+    // lint: ESLint があれば TypeScript 向けルールで実行
+    let (lint, lint_warnings) = if eslint_available() {
+        let mut l = Command::new("sh");
+        l.arg("-c")
+            .arg(r#"eslint --no-eslintrc --rule 'no-undef: error' --rule 'no-unused-vars: warn' --format compact candidate.ts 2>&1; true"#)
+            .current_dir(root);
+        let (outcome, out) = runner::run_stage_capture("eslint", l, timeout);
+        (outcome, count_eslint_findings(&out))
+    } else {
+        (StageOutcome::Skipped, 0)
+    };
+
+    Ok(StageResults {
+        compile,
+        test,
+        lint,
+        lint_warnings,
+        prop_test: StageOutcome::Skipped,
+        wasm: StageOutcome::Skipped,
+        wasm_fuel_used: None,
+        mutation: StageOutcome::Skipped,
+        mutation_caught: 0,
+        mutation_total: 0,
+        audit_findings: 0,
+        bench_ns: None,
     })
 }
 

@@ -43,12 +43,13 @@ safecode evaluate cand.rs cand.py cand.go    # cross-language comparison in one 
 
 ### Supported languages
 
-| Language   | compile        | test          | lint                     | wasm             | mutation (`--mutation`)      |
-| ---------- | -------------- | ------------- | ------------------------ | ---------------- | ---------------------------- |
-| Rust       | `cargo build`  | `cargo test`  | `clippy`                 | ✅ wasm32-wasip1 | `cargo-mutants` (if in PATH) |
-| Python     | `py_compile`   | `pytest`      | `ruff`                   | —                | `mutmut` (if in PATH)        |
-| Go         | `go build`     | `go test`     | `staticcheck` → `go vet` | —                | `gremlins` (if in PATH)      |
-| JavaScript | `node --check` | `node --test` | `eslint` (if in PATH)    | —                | —                            |
+| Language   | compile        | test                  | lint                     | wasm             | mutation (`--mutation`)      |
+| ---------- | -------------- | --------------------- | ------------------------ | ---------------- | ---------------------------- |
+| Rust       | `cargo build`  | `cargo test`          | `clippy`                 | ✅ wasm32-wasip1 | `cargo-mutants` (if in PATH) |
+| Python     | `py_compile`   | `pytest`              | `ruff`                   | —                | `mutmut` (if in PATH)        |
+| Go         | `go build`     | `go test`             | `staticcheck` → `go vet` | —                | `gremlins` (if in PATH)      |
+| JavaScript | `node --check` | `node --test`         | `eslint` (if in PATH)    | —                | —                            |
+| TypeScript | `tsc --noEmit` | `tsc` + `node --test` | `eslint` (if in PATH)    | —                | —                            |
 
 ## Scoring rubric
 

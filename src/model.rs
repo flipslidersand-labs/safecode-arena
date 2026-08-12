@@ -10,6 +10,7 @@ pub enum Language {
     Python,
     Go,
     JavaScript,
+    TypeScript,
 }
 
 impl Language {
@@ -19,6 +20,7 @@ impl Language {
             "py" => Language::Python,
             "go" => Language::Go,
             "js" => Language::JavaScript,
+            "ts" => Language::TypeScript,
             _ => Language::Rust,
         }
     }
@@ -29,6 +31,7 @@ impl Language {
             Language::Python => "python",
             Language::Go => "go",
             Language::JavaScript => "javascript",
+            Language::TypeScript => "typescript",
         }
     }
 }
