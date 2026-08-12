@@ -4,10 +4,14 @@
 //!   safecode evaluate <candidate.rs>... [--tests <dir>] [--prop-tests <dir>]
 //!            [--timeout-secs N] [--out <file>] [--format markdown|json]
 //!            [--config <safecode.toml>] [--db <path>] [--regression-threshold F]
+//!   safecode generate <spec.md> [--candidates N] [--out <file>]
 //!   safecode history --db <path>
 
+use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use safecode_arena::config::Rubric;
+use safecode_arena::generator;
+use safecode_arena::model::{Candidate, Language};
 use safecode_arena::store::{self, Store};
 use safecode_arena::{pipeline, report, scoring, Evaluation};
 use std::path::Path;
@@ -78,6 +82,26 @@ enum Command {
         #[arg(long)]
         llm_review: bool,
     },
+    /// 自然言語 spec から N 候補を LLM で生成し、検証・採点する。
+    Generate {
+        /// spec ファイル（.md / .txt）。
+        spec: String,
+        /// 生成する候補数。
+        #[arg(long, default_value_t = 3)]
+        candidates: usize,
+        /// タイムアウト（秒）。
+        #[arg(long, default_value_t = 30)]
+        timeout_secs: u64,
+        /// レポート出力先ファイル（省略時は stdout）。
+        #[arg(long)]
+        out: Option<String>,
+        /// 出力形式。
+        #[arg(long, value_enum, default_value_t = Format::Markdown)]
+        format: Format,
+        /// 採点ルーブリック設定ファイル。
+        #[arg(long)]
+        config: Option<String>,
+    },
     /// 保存済みの run 履歴を一覧表示する。
     History {
         /// 履歴 DB のパス。
@@ -120,6 +144,14 @@ fn main() -> anyhow::Result<()> {
             mutation,
             llm_review,
         }),
+        Command::Generate {
+            spec,
+            candidates,
+            timeout_secs,
+            out,
+            format,
+            config,
+        } => run_generate(spec, candidates, timeout_secs, out, format, config),
         Command::History { db } => run_history(&db),
     }
 }
@@ -233,6 +265,63 @@ fn persist_and_report_regressions(
     let run_id = s.save_run(&created_at, ranked)?;
     eprintln!("run #{run_id} を保存しました: {db_path}");
     Ok(has_regression)
+}
+
+fn run_generate(
+    spec_path: String,
+    n: usize,
+    timeout_secs: u64,
+    out: Option<String>,
+    format: Format,
+    config: Option<String>,
+) -> anyhow::Result<()> {
+    let spec = std::fs::read_to_string(&spec_path)
+        .with_context(|| format!("spec ファイルの読込に失敗: {spec_path}"))?;
+
+    eprintln!("[generate] spec: {spec_path} ({} chars)", spec.len());
+    eprintln!("[generate] {n} 候補を生成中 ...");
+
+    let sources = generator::generate(&spec, n);
+    if sources.is_empty() {
+        anyhow::bail!("LLM からコード候補を取得できませんでした。SAFECODE_LLM_BACKEND / API キーを確認してください。");
+    }
+    eprintln!("[generate] {} 候補を取得", sources.len());
+
+    let timeout = Duration::from_secs(timeout_secs);
+    let rubric = Rubric::load(config.as_deref())?;
+    let wasm_opts = pipeline::WasmOptions::default();
+
+    let mut evals = Vec::with_capacity(sources.len());
+    for (i, source) in sources.iter().enumerate() {
+        let id = format!("candidate_{}", i + 1);
+        eprintln!("[evaluate] {} ...", id);
+        let candidate = Candidate { id, source: source.clone(), language: Language::Rust };
+        match pipeline::evaluate_candidate(&candidate, timeout, &rubric, None, None, &wasm_opts, false, false) {
+            Ok(eval) => evals.push(eval),
+            Err(e) => eprintln!("[warn] {} の評価失敗: {e}", candidate.id),
+        }
+    }
+
+    if evals.is_empty() {
+        anyhow::bail!("全候補の評価に失敗しました");
+    }
+
+    scoring::assign_performance(&mut evals, &rubric);
+    let ranked = scoring::rank(evals);
+
+    let rendered = match format {
+        Format::Markdown => report::render(&ranked),
+        Format::Json => serde_json::to_string_pretty(&ranked)?,
+        Format::Html => report::render_html(&ranked),
+    };
+    match out.as_deref() {
+        Some(path) => {
+            std::fs::write(path, &rendered)?;
+            eprintln!("レポートを書き出しました: {path}");
+        }
+        None => print!("{rendered}"),
+    }
+    Ok(())
 }
 
 fn run_history(db_path: &str) -> anyhow::Result<()> {
