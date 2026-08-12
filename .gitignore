@@ -1,3 +1,18 @@
 /target
 **/*.rs.bk
 *.pdb
+
+# Mutation testing output
+mutants-out/
+mutmut-out/
+.mutmut-cache
+
+# Evaluation databases
+*.db
+
+# OS / Editor
+.DS_Store
+*.swp
+*.tmp
+.idea/
+.vscode/
