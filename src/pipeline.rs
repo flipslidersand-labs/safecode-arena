@@ -1,7 +1,10 @@
 //! 検証パイプライン駆動。候補を一時 Cargo プロジェクトへ展開し、
 //! compile → test → 採点 までを実行する。
 
-use crate::analysis::{count_eslint_findings, count_go_vet_findings, count_lint_warnings, count_ruff_findings, count_staticcheck_findings, has_bench, SourceMetrics};
+use crate::analysis::{
+    count_eslint_findings, count_go_vet_findings, count_lint_warnings, count_ruff_findings,
+    count_staticcheck_findings, has_bench, SourceMetrics,
+};
 use crate::config::Rubric;
 use crate::model::{Candidate, Evaluation, Language, StageOutcome};
 use crate::{runner, scoring, wasm};
@@ -309,8 +312,7 @@ fn run_rust_stages(
         fs::create_dir_all(root.join("benches")).context("benches ディレクトリの作成に失敗")?;
         fs::write(root.join("benches").join("bench.rs"), &candidate.source)
             .context("ベンチソースの書込に失敗")?;
-        fs::write(root.join("src").join("lib.rs"), "")
-            .context("空 lib.rs の書込に失敗")?;
+        fs::write(root.join("src").join("lib.rs"), "").context("空 lib.rs の書込に失敗")?;
     } else {
         fs::write(root.join("src").join("lib.rs"), &candidate.source)
             .context("候補ソースの書込に失敗")?;
@@ -611,9 +613,7 @@ fn run_go_stages(
         (outcome, count_staticcheck_findings(&out))
     } else {
         let mut l = Command::new("sh");
-        l.arg("-c")
-            .arg("go vet ./... 1>&2; true")
-            .current_dir(root);
+        l.arg("-c").arg("go vet ./... 1>&2; true").current_dir(root);
         let (outcome, out) = runner::run_stage_capture("go-vet", l, timeout);
         (outcome, count_go_vet_findings(&out))
     };

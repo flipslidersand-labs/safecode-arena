@@ -34,17 +34,21 @@ safecode history --db history.db
 # Isolated execution in a Wasm sandbox (candidate needs a pub fn run())
 safecode evaluate candidate.rs --wasm-entry run --wasm-fuel 100000000
 
-# Python candidates work too (auto-detected by extension), including mixed-language comparison
+# Python / Go / JavaScript candidates work too (auto-detected by extension)
 safecode evaluate solution.py --tests py_tests/
-safecode evaluate cand.rs cand.py    # cross-language comparison in one run
+safecode evaluate solution.go --tests tests/
+safecode evaluate solution.js
+safecode evaluate cand.rs cand.py cand.go    # cross-language comparison in one run
 ```
 
 ### Supported languages
 
-| Language | compile       | test         | lint     | wasm             | mutation (`--mutation`)      |
-| -------- | ------------- | ------------ | -------- | ---------------- | ---------------------------- |
-| Rust     | `cargo build` | `cargo test` | `clippy` | ✅ wasm32-wasip1 | `cargo-mutants` (if in PATH) |
-| Python   | `py_compile`  | `pytest`     | `ruff`   | —                | `mutmut` (if in PATH)        |
+| Language   | compile        | test          | lint                     | wasm             | mutation (`--mutation`)      |
+| ---------- | -------------- | ------------- | ------------------------ | ---------------- | ---------------------------- |
+| Rust       | `cargo build`  | `cargo test`  | `clippy`                 | ✅ wasm32-wasip1 | `cargo-mutants` (if in PATH) |
+| Python     | `py_compile`   | `pytest`      | `ruff`                   | —                | `mutmut` (if in PATH)        |
+| Go         | `go build`     | `go test`     | `staticcheck` → `go vet` | —                | `gremlins` (if in PATH)      |
+| JavaScript | `node --check` | `node --test` | `eslint` (if in PATH)    | —                | —                            |
 
 ## Scoring rubric
 
@@ -77,7 +81,7 @@ cargo fmt
 
 ## Status
 
-✅ Phases 1–8b complete. All 5 scoring axes measured. SQLite persistence + regression detection. Wasm sandbox. Python support (py_compile / pytest / ruff). **Mutation testing**: Rust (`cargo-mutants`) and Python (`mutmut`) integrated and weight-aware. Next up: Go/JS support, Go mutation testing (gremlins).
+✅ Phases 1–11 complete. All 5 scoring axes measured. SQLite persistence + regression detection. Wasm sandbox. **Multi-language**: Rust / Python / Go / JavaScript auto-detected by extension. **Mutation testing**: Rust (`cargo-mutants`), Python (`mutmut`), Go (`gremlins`) integrated and weight-aware. **Criterion benchmarks** integrated for performance axis. GitHub Actions CI with regression detection.
 
 ## License
 

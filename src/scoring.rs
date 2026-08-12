@@ -522,7 +522,10 @@ mod tests {
             e
         };
         // fast: bench=100ns, slow compile; slow: bench=2000ns, fast compile
-        let mut evals = vec![mk("fast", Some(100), 500, 500), mk("slow", Some(2000), 10, 10)];
+        let mut evals = vec![
+            mk("fast", Some(100), 500, 500),
+            mk("slow", Some(2000), 10, 10),
+        ];
         assign_performance(&mut evals, &r);
         let fast = evals.iter().find(|e| e.candidate_id == "fast").unwrap();
         let slow = evals.iter().find(|e| e.candidate_id == "slow").unwrap();

@@ -129,13 +129,17 @@ impl Config {
             .with_context(|| format!("設定ファイルの解析に失敗: {}", path.display()))?;
 
         let base = Rubric::default();
-        let default_rubric = parsed.weights.as_ref().map(|w| Rubric {
-            correctness: w.correctness.unwrap_or(base.correctness),
-            security: w.security.unwrap_or(base.security),
-            performance: w.performance.unwrap_or(base.performance),
-            maintainability: w.maintainability.unwrap_or(base.maintainability),
-            resource_usage: w.resource_usage.unwrap_or(base.resource_usage),
-        }).unwrap_or(base);
+        let default_rubric = parsed
+            .weights
+            .as_ref()
+            .map(|w| Rubric {
+                correctness: w.correctness.unwrap_or(base.correctness),
+                security: w.security.unwrap_or(base.security),
+                performance: w.performance.unwrap_or(base.performance),
+                maintainability: w.maintainability.unwrap_or(base.maintainability),
+                resource_usage: w.resource_usage.unwrap_or(base.resource_usage),
+            })
+            .unwrap_or(base);
 
         let (rust, python, go, javascript) = parsed
             .weights
