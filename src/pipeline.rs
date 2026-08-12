@@ -569,6 +569,12 @@ fn run_go_stages(
         (outcome, count_go_vet_findings(&out))
     };
 
+    let (mutation, mutation_caught, mutation_total) = if test.is_passed() {
+        run_go_mutation(root, timeout)
+    } else {
+        (StageOutcome::Skipped, 0, 0)
+    };
+
     Ok(StageResults {
         compile,
         test,
@@ -577,10 +583,72 @@ fn run_go_stages(
         prop_test: StageOutcome::Skipped,
         wasm: StageOutcome::Skipped,
         wasm_fuel_used: None,
-        mutation: StageOutcome::Skipped,
-        mutation_caught: 0,
-        mutation_total: 0,
+        mutation,
+        mutation_caught,
+        mutation_total,
     })
+}
+
+/// `gremlins` で Go 候補のミューテーションテストを実行する。
+///
+/// `gremlins unleash --output gremlins.json ./...` を実行し、
+/// JSON ファイルを読み取って (caught, total) を返す。
+/// gremlins が PATH に無い場合は Skipped を返す。
+fn run_go_mutation(root: &Path, timeout: Duration) -> (StageOutcome, usize, usize) {
+    let gremlins_available = std::process::Command::new("gremlins")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !gremlins_available {
+        return (StageOutcome::Skipped, 0, 0);
+    }
+
+    let json_out = "gremlins.json";
+    let mutation_timeout = timeout * 3;
+
+    let mut cmd = Command::new("gremlins");
+    cmd.args(["unleash", "--output", json_out, "./..."])
+        .current_dir(root);
+    let (outcome, _) = runner::run_stage_capture("mutation", cmd, mutation_timeout);
+
+    if matches!(outcome, StageOutcome::TimedOut { .. }) {
+        return (outcome, 0, 0);
+    }
+
+    // gremlins は survived ミュータントがあっても非ゼロ終了するため、
+    // JSON が読めれば成功扱いにする
+    match fs::read_to_string(root.join(json_out))
+        .ok()
+        .and_then(|s| parse_gremlins_json(&s))
+    {
+        Some((caught, total)) => {
+            let duration_ms = outcome
+                .duration_ms()
+                .unwrap_or(mutation_timeout.as_millis() as u64);
+            (StageOutcome::Passed { duration_ms }, caught, total)
+        }
+        None => (StageOutcome::Skipped, 0, 0),
+    }
+}
+
+/// `gremlins unleash --output` の JSON から (caught, total) を取り出す。
+///
+/// gremlins の JSON 出力フォーマット（主要フィールド）:
+/// ```json
+/// {"mutants_killed": 3, "mutants_total": 5, ...}
+/// ```
+fn parse_gremlins_json(content: &str) -> Option<(usize, usize)> {
+    #[derive(serde::Deserialize)]
+    struct GremlinsOutput {
+        mutants_killed: usize,
+        mutants_total: usize,
+    }
+    serde_json::from_str::<GremlinsOutput>(content)
+        .ok()
+        .map(|g| (g.mutants_killed, g.mutants_total))
 }
 
 /// JavaScript 候補: node --check（構文検証）→ node --test → ESLint（あれば）。
@@ -635,4 +703,94 @@ fn run_js_stages(
         mutation_caught: 0,
         mutation_total: 0,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- parse_gremlins_json ---
+
+    #[test]
+    fn parse_gremlins_json_extracts_killed_and_total() {
+        let json = r#"{"mutants_killed":3,"mutants_total":5,"mutants_lived":2,"test_efficacy":0.6}"#;
+        assert_eq!(parse_gremlins_json(json), Some((3, 5)));
+    }
+
+    #[test]
+    fn parse_gremlins_json_all_killed() {
+        let json = r#"{"mutants_killed":7,"mutants_total":7,"mutants_lived":0}"#;
+        assert_eq!(parse_gremlins_json(json), Some((7, 7)));
+    }
+
+    #[test]
+    fn parse_gremlins_json_none_killed() {
+        let json = r#"{"mutants_killed":0,"mutants_total":4,"mutants_lived":4}"#;
+        assert_eq!(parse_gremlins_json(json), Some((0, 4)));
+    }
+
+    #[test]
+    fn parse_gremlins_json_returns_none_on_empty() {
+        assert_eq!(parse_gremlins_json(""), None);
+    }
+
+    #[test]
+    fn parse_gremlins_json_returns_none_on_missing_field() {
+        // mutants_total が無い → None
+        let json = r#"{"mutants_killed":3,"mutants_lived":2}"#;
+        assert_eq!(parse_gremlins_json(json), None);
+    }
+
+    // --- mutation 統合: run_go_stages の mutation フィールド伝播 ---
+
+    #[test]
+    fn go_stages_mutation_skipped_when_compile_fails() {
+        // 構文エラー → compile 失敗 → mutation も Skipped
+        let src = "package main\n\nfunc broken( {\n}\n";
+        let candidate = Candidate {
+            id: "syntax-err".into(),
+            source: src.into(),
+            language: Language::Go,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let results =
+            run_go_stages(dir.path(), &candidate, Duration::from_secs(30), None).unwrap();
+        assert!(matches!(results.compile, StageOutcome::Failed { .. }));
+        assert!(
+            matches!(results.mutation, StageOutcome::Skipped),
+            "compile 失敗時は mutation も Skipped"
+        );
+        assert_eq!(results.mutation_caught, 0);
+        assert_eq!(results.mutation_total, 0);
+    }
+
+    #[test]
+    fn go_stages_mutation_skipped_when_gremlins_unavailable() {
+        // gremlins が PATH に無い → mutation は Skipped
+        if std::process::Command::new("gremlins")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            return; // gremlins がある環境ではスキップ
+        }
+        let src = "package main\n\nfunc Add(a, b int) int {\n\treturn a + b\n}\n";
+        let candidate = Candidate {
+            id: "add".into(),
+            source: src.into(),
+            language: Language::Go,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let results =
+            run_go_stages(dir.path(), &candidate, Duration::from_secs(30), None).unwrap();
+        assert!(
+            matches!(results.mutation, StageOutcome::Skipped),
+            "gremlins が無い場合は mutation は Skipped"
+        );
+        assert_eq!(results.mutation_caught, 0);
+        assert_eq!(results.mutation_total, 0);
+    }
 }
