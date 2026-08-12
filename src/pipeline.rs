@@ -1,7 +1,7 @@
 //! 検証パイプライン駆動。候補を一時 Cargo プロジェクトへ展開し、
 //! compile → test → 採点 までを実行する。
 
-use crate::analysis::{count_eslint_findings, count_go_vet_findings, count_lint_warnings, count_ruff_findings, count_staticcheck_findings, SourceMetrics};
+use crate::analysis::{count_eslint_findings, count_go_vet_findings, count_lint_warnings, count_ruff_findings, count_staticcheck_findings, has_bench, SourceMetrics};
 use crate::config::Rubric;
 use crate::model::{Candidate, Evaluation, Language, StageOutcome};
 use crate::{runner, scoring, wasm};
@@ -40,6 +40,23 @@ edition = "2021"
 
 [lib]
 path = "src/lib.rs"
+"#;
+
+/// Criterion ベンチを持つ Cargo.toml（`benches/bench.rs` を参照）。
+const CARGO_TOML_WITH_CRITERION: &str = r#"[package]
+name = "candidate"
+version = "0.0.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "bench"
+harness = false
 "#;
 
 /// proptest を dev-dependency に持つ Cargo.toml。
@@ -171,6 +188,7 @@ struct StageResults {
     mutation_caught: usize,
     mutation_total: usize,
     audit_findings: usize,
+    bench_ns: Option<u64>,
 }
 
 impl StageResults {
@@ -188,6 +206,7 @@ impl StageResults {
             mutation_caught: 0,
             mutation_total: 0,
             audit_findings: 0,
+            bench_ns: None,
         }
     }
 }
@@ -259,6 +278,7 @@ fn assemble(candidate: &Candidate, r: StageResults, rubric: &Rubric) -> Evaluati
         mutation_caught: r.mutation_caught,
         mutation_total: r.mutation_total,
         audit_findings: r.audit_findings,
+        bench_ns: r.bench_ns,
         axes,
         score,
     }
@@ -275,14 +295,26 @@ fn run_rust_stages(
     run_mutation: bool,
 ) -> Result<StageResults> {
     fs::create_dir_all(root.join("src")).context("src ディレクトリの作成に失敗")?;
-    let toml = if prop_tests_dir.is_some() {
+    let is_bench = has_bench(&candidate.source);
+    let toml = if is_bench {
+        CARGO_TOML_WITH_CRITERION
+    } else if prop_tests_dir.is_some() {
         CARGO_TOML_WITH_PROPTEST
     } else {
         CARGO_TOML_TEMPLATE
     };
     fs::write(root.join("Cargo.toml"), toml).context("Cargo.toml の書込に失敗")?;
-    fs::write(root.join("src").join("lib.rs"), &candidate.source)
-        .context("候補ソースの書込に失敗")?;
+    if is_bench {
+        // Criterion ベンチ候補: benches/bench.rs に配置し、src/lib.rs は空にする。
+        fs::create_dir_all(root.join("benches")).context("benches ディレクトリの作成に失敗")?;
+        fs::write(root.join("benches").join("bench.rs"), &candidate.source)
+            .context("ベンチソースの書込に失敗")?;
+        fs::write(root.join("src").join("lib.rs"), "")
+            .context("空 lib.rs の書込に失敗")?;
+    } else {
+        fs::write(root.join("src").join("lib.rs"), &candidate.source)
+            .context("候補ソースの書込に失敗")?;
+    }
     if let Some(dir) = tests_dir {
         copy_ext(dir, &root.join("tests"), "rs")?;
     }
@@ -325,6 +357,11 @@ fn run_rust_stages(
     };
 
     let audit_findings = run_cargo_audit(root, timeout);
+    let bench_ns = if has_bench(&candidate.source) {
+        run_bench_stage(root, timeout)
+    } else {
+        None
+    };
 
     Ok(StageResults {
         compile,
@@ -338,6 +375,7 @@ fn run_rust_stages(
         mutation_caught,
         mutation_total,
         audit_findings,
+        bench_ns,
     })
 }
 
@@ -466,6 +504,7 @@ fn run_python_stages(
         mutation_caught,
         mutation_total,
         audit_findings: 0,
+        bench_ns: None,
     })
 }
 
@@ -597,6 +636,7 @@ fn run_go_stages(
         mutation_caught,
         mutation_total,
         audit_findings: 0,
+        bench_ns: None,
     })
 }
 
@@ -707,6 +747,7 @@ fn run_js_stages(
         mutation_caught: 0,
         mutation_total: 0,
         audit_findings: 0,
+        bench_ns: None,
     })
 }
 
@@ -753,4 +794,100 @@ fn parse_audit_json(stdout: &str) -> Option<usize> {
         }
     }
     None
+}
+
+/// Criterion ベンチを `benches/bench.rs` として実行し、中央値 (ns) を返す。
+///
+/// `benches/` ディレクトリが存在し Cargo.toml が criterion 対応の場合のみ実行。
+/// Criterion の出力形式 `bench_name  time:   [lo mid hi]` の中央値を抽出する。
+/// 複数ベンチが存在する場合は最小中央値（最速）を採用する。
+fn run_bench_stage(root: &Path, timeout: Duration) -> Option<u64> {
+    if !root.join("benches").exists() {
+        return None;
+    }
+    let mut cmd = Command::new("cargo");
+    cmd.arg("bench").current_dir(root);
+    let (_outcome, stderr) = runner::run_stage_capture("bench", cmd, timeout);
+    parse_criterion_ns(&stderr)
+}
+
+/// Criterion の stderr 出力から中央値 (ns) を抽出する。
+///
+/// 出力形式: `bench_name  time:   [lo_val lo_unit mid_val mid_unit hi_val hi_unit]`
+/// 複数ベンチがある場合は最小中央値を返す。
+fn parse_criterion_ns(output: &str) -> Option<u64> {
+    let mut min_ns: Option<f64> = None;
+    for line in output.lines() {
+        let Some(after_time) = line.split("time:").nth(1) else {
+            continue;
+        };
+        let inner = after_time.trim().trim_start_matches('[');
+        let values: Vec<&str> = inner.split_whitespace().collect();
+        if values.len() < 4 {
+            continue;
+        }
+        let mid_val: f64 = match values[2].parse() {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let mid_unit = values[3].trim_end_matches(']');
+        let Some(ns) = to_ns(mid_val, mid_unit) else {
+            continue;
+        };
+        min_ns = Some(match min_ns {
+            Some(prev) => prev.min(ns),
+            None => ns,
+        });
+    }
+    min_ns.map(|v| v.round() as u64)
+}
+
+fn to_ns(val: f64, unit: &str) -> Option<f64> {
+    match unit {
+        "ns" => Some(val),
+        "µs" | "us" => Some(val * 1_000.0),
+        "ms" => Some(val * 1_000_000.0),
+        "s" => Some(val * 1_000_000_000.0),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod bench_tests {
+    use super::*;
+
+    #[test]
+    fn parse_criterion_ns_parses_ns_unit() {
+        let output = "my_bench   time:   [123.00 ns 456.00 ns 789.00 ns]";
+        assert_eq!(parse_criterion_ns(output), Some(456));
+    }
+
+    #[test]
+    fn parse_criterion_ns_parses_us_unit() {
+        let output = "my_bench   time:   [1.0 µs 2.5 µs 3.0 µs]";
+        assert_eq!(parse_criterion_ns(output), Some(2500));
+    }
+
+    #[test]
+    fn parse_criterion_ns_picks_min_across_benches() {
+        let output = "fast_bench  time:   [10.0 ns 20.0 ns 30.0 ns]\nslow_bench  time:   [100.0 ns 200.0 ns 300.0 ns]";
+        assert_eq!(parse_criterion_ns(output), Some(20));
+    }
+
+    #[test]
+    fn parse_criterion_ns_returns_none_on_empty() {
+        assert_eq!(parse_criterion_ns(""), None);
+        assert_eq!(parse_criterion_ns("no bench output here"), None);
+    }
+
+    #[test]
+    fn has_bench_detects_criterion() {
+        use crate::analysis::has_bench;
+        let src = r#"use criterion::{criterion_group, criterion_main, Criterion};
+fn bench(c: &mut Criterion) { c.bench_function("f", |b| b.iter(|| 1 + 1)); }
+criterion_group!(benches, bench);
+criterion_main!(benches);"#;
+        assert!(has_bench(src));
+        assert!(!has_bench("fn regular() {}"));
+    }
 }

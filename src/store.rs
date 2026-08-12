@@ -177,6 +177,7 @@ mod tests {
             mutation_caught: 0,
             mutation_total: 0,
             audit_findings: 0,
+            bench_ns: None,
             axes: AxisScores::default(),
             score,
         }

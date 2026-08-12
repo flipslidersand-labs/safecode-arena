@@ -130,11 +130,20 @@ pub fn axes_without_performance(
 /// compile か test が通っていない候補は performance 0。
 /// 付与後、各 `score` を `axes.total()` で再計算する。
 pub fn assign_performance(evals: &mut [Evaluation], rubric: &Rubric) {
+    // bench_ns が 1 件でもあれば全候補で bench_ns を優先する。
+    // bench_ns がない候補は 0 扱い（最遅）ではなく None 扱い（採点対象外）。
+    let has_any_bench = evals.iter().any(|e| e.bench_ns.is_some());
     let times: Vec<Option<u64>> = evals
         .iter()
-        .map(|e| match (e.compile.duration_ms(), e.test.duration_ms()) {
-            (Some(c), Some(t)) => Some(c + t),
-            _ => None,
+        .map(|e| {
+            if has_any_bench {
+                e.bench_ns
+            } else {
+                match (e.compile.duration_ms(), e.test.duration_ms()) {
+                    (Some(c), Some(t)) => Some(c + t),
+                    _ => None,
+                }
+            }
         })
         .collect();
 
@@ -143,7 +152,7 @@ pub fn assign_performance(evals: &mut [Evaluation], rubric: &Rubric) {
     for (e, time) in evals.iter_mut().zip(times.iter()) {
         let ratio = match (time, fastest) {
             (Some(t), Some(min)) if *t > 0 => min as f64 / *t as f64,
-            (Some(_), Some(_)) => 1.0, // 0ms は満点扱い
+            (Some(_), Some(_)) => 1.0, // 0ns/ms は満点扱い
             _ => 0.0,
         };
         e.axes.performance = rubric.performance * ratio;
@@ -346,6 +355,7 @@ mod tests {
             mutation_caught: 0,
             mutation_total: 0,
             audit_findings: 0,
+            bench_ns: None,
             axes: AxisScores::default(),
             score: 0.0,
         };
@@ -372,6 +382,7 @@ mod tests {
             mutation_caught: 0,
             mutation_total: 0,
             audit_findings: 0,
+            bench_ns: None,
             axes: AxisScores::default(),
             score: 0.0,
         }];
@@ -394,6 +405,7 @@ mod tests {
             mutation_caught: 0,
             mutation_total: 0,
             audit_findings: 0,
+            bench_ns: None,
             axes: AxisScores::default(),
             score: s,
         };
@@ -483,5 +495,38 @@ mod tests {
         );
         let expected = r.correctness * (0.30 + 0.30 + 0.25 * 0.75);
         assert!((a.correctness - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn bench_ns_preferred_over_compile_time() {
+        let r = Rubric::default();
+        let mk = |id: &str, bench: Option<u64>, c: u64, t: u64| {
+            let mut e = Evaluation {
+                candidate_id: id.into(),
+                compile: passed(c),
+                test: passed(t),
+                lint: StageOutcome::Skipped,
+                lint_warnings: 0,
+                prop_test: StageOutcome::Skipped,
+                wasm: StageOutcome::Skipped,
+                wasm_fuel_used: None,
+                mutation: StageOutcome::Skipped,
+                mutation_caught: 0,
+                mutation_total: 0,
+                audit_findings: 0,
+                bench_ns: bench,
+                axes: AxisScores::default(),
+                score: 0.0,
+            };
+            e.axes = AxisScores::default();
+            e
+        };
+        // fast: bench=100ns, slow compile; slow: bench=2000ns, fast compile
+        let mut evals = vec![mk("fast", Some(100), 500, 500), mk("slow", Some(2000), 10, 10)];
+        assign_performance(&mut evals, &r);
+        let fast = evals.iter().find(|e| e.candidate_id == "fast").unwrap();
+        let slow = evals.iter().find(|e| e.candidate_id == "slow").unwrap();
+        // bench_ns を使うので fast が高スコア
+        assert!(fast.axes.performance > slow.axes.performance);
     }
 }
