@@ -41,20 +41,20 @@ safecode evaluate cand.rs cand.py    # cross-language comparison in one run
 
 ### Supported languages
 
-| Language | compile       | test         | lint     | wasm             |
-| -------- | ------------- | ------------ | -------- | ---------------- |
-| Rust     | `cargo build` | `cargo test` | `clippy` | ✅ wasm32-wasip1 |
-| Python   | `py_compile`  | `pytest`     | `ruff`   | —                |
+| Language | compile       | test         | lint     | wasm             | mutation (`--mutation`)      |
+| -------- | ------------- | ------------ | -------- | ---------------- | ---------------------------- |
+| Rust     | `cargo build` | `cargo test` | `clippy` | ✅ wasm32-wasip1 | `cargo-mutants` (if in PATH) |
+| Python   | `py_compile`  | `pytest`     | `ruff`   | —                | `mutmut` (if in PATH)        |
 
 ## Scoring rubric
 
-| Axis            | Weight | How it's computed                                     |
-| --------------- | ------ | ----------------------------------------------------- |
-| correctness     | 50     | compile 40% + tests 40% + property tests 20%          |
-| security        | 20     | `unsafe` heuristics 50% + clippy 50%                  |
-| performance     | 15     | relative compile+test time across candidates          |
-| maintainability | 10     | function-length heuristics 60% + clippy 40%           |
-| resource_usage  | 5      | pass/fail of sandboxed Wasm (wasm32-wasip1) execution |
+| Axis            | Weight | How it's computed                                                                       |
+| --------------- | ------ | --------------------------------------------------------------------------------------- |
+| correctness     | 50     | compile 40% + tests 40% + prop tests 20% (with `--mutation`: 30% + 30% + 15% + 25% mut) |
+| security        | 20     | `unsafe` heuristics 50% + clippy 50%                                                    |
+| performance     | 15     | relative compile+test time across candidates                                            |
+| maintainability | 10     | function-length heuristics 60% + clippy 40%                                             |
+| resource_usage  | 5      | pass/fail of sandboxed Wasm (wasm32-wasip1) execution                                   |
 
 Weights can be overridden via `[weights]` in `safecode.toml`.
 
@@ -77,7 +77,7 @@ cargo fmt
 
 ## Status
 
-✅ Phases 1–4 complete (all 5 axes measured / SQLite persistence + regression detection / Wasm sandbox). Phase 5 added **Python support** (py_compile / pytest / ruff, mixed comparison with Rust). Next up: Go/JS support, mutation testing. See Issue #1 for the roadmap.
+✅ Phases 1–8b complete. All 5 scoring axes measured. SQLite persistence + regression detection. Wasm sandbox. Python support (py_compile / pytest / ruff). **Mutation testing**: Rust (`cargo-mutants`) and Python (`mutmut`) integrated and weight-aware. Next up: Go/JS support, Go mutation testing (gremlins).
 
 ## License
 
