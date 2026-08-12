@@ -832,6 +832,8 @@ fn run_ts_stages(
             mutation_total: 0,
             audit_findings: 0,
             bench_ns: None,
+            reasoning_score: None,
+            reasoning_comment: None,
         });
     }
 
@@ -875,6 +877,8 @@ fn run_ts_stages(
         mutation_total: 0,
         audit_findings: 0,
         bench_ns: None,
+        reasoning_score: None,
+        reasoning_comment: None,
     })
 }
 
