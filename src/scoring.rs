@@ -21,6 +21,13 @@ fn lint_security_ratio(lint: &StageOutcome, warnings: usize) -> f64 {
     }
 }
 
+/// cargo-audit の脆弱性数から security 達成率を算出する。
+///
+/// 0 件 = 1.0、1 件ごとに 0.2 減点（lint より重い）。
+fn audit_security_ratio(findings: usize) -> f64 {
+    (1.0 - 0.2 * findings as f64).clamp(0.0, 1.0)
+}
+
 /// lint warning 数から maintainability 補正係数を返す。
 ///
 /// 0 件 = 1.0、3 件ごとに 0.1 減点。
@@ -43,6 +50,10 @@ fn lint_maintainability_ratio(warnings: usize) -> f64 {
 /// - `mutation_caught` / `mutation_total`: cargo mutants の結果（correctness に反映）
 ///   mutation が実行された場合（total > 0）、correctness の重みを再配分する:
 ///   compile(30%) + test(30%) + prop_test(15%) + mutation(25%)
+///
+/// Phase 9 追加パラメータ:
+/// - `audit_findings`: cargo-audit の脆弱性数（security に反映）
+///   security = unsafe(40%) + lint(30%) + audit(30%)
 #[allow(clippy::too_many_arguments)]
 pub fn axes_without_performance(
     compile: &StageOutcome,
@@ -55,6 +66,7 @@ pub fn axes_without_performance(
     rubric: &Rubric,
     mutation_caught: usize,
     mutation_total: usize,
+    audit_findings: usize,
 ) -> AxisScores {
     // mutation が実行された場合は重みを再配分する。
     // Skipped（total == 0）の場合は従来通り compile(40%) + test(40%) + prop_test(20%)。
@@ -93,8 +105,9 @@ pub fn axes_without_performance(
     let (security, maintainability) = if compile.is_passed() {
         let unsafe_ratio = metrics.security_ratio();
         let lint_sec = lint_security_ratio(lint, lint_warnings);
-        // security = unsafe ヒューリスティック(50%) + lint(50%)
-        let sec = rubric.security * (unsafe_ratio * 0.5 + lint_sec * 0.5);
+        let audit_sec = audit_security_ratio(audit_findings);
+        // security = unsafe(40%) + lint(30%) + audit(30%)
+        let sec = rubric.security * (unsafe_ratio * 0.4 + lint_sec * 0.3 + audit_sec * 0.3);
 
         let heuristic_maint = metrics.maintainability_ratio();
         let lint_maint = lint_maintainability_ratio(lint_warnings);
@@ -122,16 +135,29 @@ pub fn axes_without_performance(
     }
 }
 
-/// 候補集合の compile+test 所要時間を相対比較し、performance 軸を付与する。
-/// 最速候補に満点、それ以外は `min_time / own_time` で按分。
+/// 候補集合の実行時間を相対比較し、performance 軸を付与する。
+///
+/// Criterion / `#[bench]` ベンチマーク結果 (`bench_ns`) が得られた候補はその値を優先し、
+/// 未取得の候補は compile+test 所要時間にフォールバックする。
+/// 異なるメトリクス同士は直接比較できないため、bench_ns が一部にしかない場合は
+/// bench_ns を持つ候補のみで比較し、残りは compile+test で別途比較する。
 /// compile か test が通っていない候補は performance 0。
 /// 付与後、各 `score` を `axes.total()` で再計算する。
 pub fn assign_performance(evals: &mut [Evaluation], rubric: &Rubric) {
+    let has_any_bench = evals.iter().any(|e| e.bench_ns.is_some());
+
     let times: Vec<Option<u64>> = evals
         .iter()
-        .map(|e| match (e.compile.duration_ms(), e.test.duration_ms()) {
-            (Some(c), Some(t)) => Some(c + t),
-            _ => None,
+        .map(|e| {
+            if has_any_bench {
+                // bench_ns があればそれを優先。無い候補は比較対象外（None）。
+                e.bench_ns
+            } else {
+                match (e.compile.duration_ms(), e.test.duration_ms()) {
+                    (Some(c), Some(t)) => Some(c + t),
+                    _ => None,
+                }
+            }
         })
         .collect();
 
@@ -184,7 +210,28 @@ mod tests {
             &Rubric::default(),
             0,
             0,
+            0, // audit_findings
         )
+    }
+
+    fn eval_stub(id: &str) -> Evaluation {
+        Evaluation {
+            candidate_id: id.into(),
+            compile: StageOutcome::Skipped,
+            test: StageOutcome::Skipped,
+            lint: StageOutcome::Skipped,
+            lint_warnings: 0,
+            prop_test: StageOutcome::Skipped,
+            wasm: StageOutcome::Skipped,
+            wasm_fuel_used: None,
+            mutation: StageOutcome::Skipped,
+            mutation_caught: 0,
+            mutation_total: 0,
+            audit_findings: 0,
+            bench_ns: None,
+            axes: AxisScores::default(),
+            score: 0.0,
+        }
     }
 
     #[test]
@@ -209,6 +256,7 @@ mod tests {
             &r,
             0,
             0,
+            0, // audit_findings
         );
         assert_eq!(a.correctness, r.correctness);
     }
@@ -241,6 +289,7 @@ mod tests {
             &r,
             0,
             0,
+            0, // audit_findings
         );
         let with_warn = axes_without_performance(
             &passed(1),
@@ -253,12 +302,13 @@ mod tests {
             &r,
             0,
             0,
+            0, // audit_findings
         );
         assert!(no_warn.security > with_warn.security);
     }
 
     #[test]
-    fn lint_failure_reduces_security_to_half() {
+    fn lint_failure_reduces_security() {
         let clean = axes_without_performance(
             &passed(1),
             &passed(1),
@@ -270,6 +320,7 @@ mod tests {
             &Rubric::default(),
             0,
             0,
+            0, // audit_findings
         );
         let lint_fail = axes_without_performance(
             &passed(1),
@@ -282,10 +333,11 @@ mod tests {
             &Rubric::default(),
             0,
             0,
+            0, // audit_findings
         );
-        // lint failed → lint_sec = 0, unsafe clean → unsafe_ratio = 1.0
-        // security = rubric.security * (1.0*0.5 + 0.0*0.5) = rubric.security * 0.5
-        assert!((lint_fail.security - clean.security * 0.5).abs() < 1e-9);
+        // lint failed → lint_sec = 0, unsafe clean → unsafe_ratio = 1.0, audit = 1.0
+        // security = rubric.security * (1.0*0.4 + 0.0*0.3 + 1.0*0.3) = rubric.security * 0.7
+        assert!((lint_fail.security - clean.security * 0.7).abs() < 1e-9);
     }
 
     #[test]
@@ -302,6 +354,7 @@ mod tests {
             &r,
             0,
             0,
+            0, // audit_findings
         );
         let no_wasm = axes_without_performance(
             &passed(1),
@@ -314,6 +367,7 @@ mod tests {
             &r,
             0,
             0,
+            0, // audit_findings
         );
         assert_eq!(with_wasm.resource_usage, r.resource_usage);
         assert_eq!(no_wasm.resource_usage, 0.0);
@@ -322,20 +376,11 @@ mod tests {
     #[test]
     fn performance_is_relative_fastest_wins() {
         let r = Rubric::default();
-        let mk = |id: &str, c: u64, t: u64| Evaluation {
-            candidate_id: id.into(),
-            compile: passed(c),
-            test: passed(t),
-            lint: StageOutcome::Skipped,
-            lint_warnings: 0,
-            prop_test: StageOutcome::Skipped,
-            wasm: StageOutcome::Skipped,
-            wasm_fuel_used: None,
-            mutation: StageOutcome::Skipped,
-            mutation_caught: 0,
-            mutation_total: 0,
-            axes: AxisScores::default(),
-            score: 0.0,
+        let mk = |id: &str, c: u64, t: u64| {
+            let mut e = eval_stub(id);
+            e.compile = passed(c);
+            e.test = passed(t);
+            e
         };
         let mut evals = vec![mk("fast", 10, 10), mk("slow", 30, 30)];
         assign_performance(&mut evals, &r);
@@ -347,41 +392,19 @@ mod tests {
     #[test]
     fn performance_zero_when_not_compiled() {
         let r = Rubric::default();
-        let mut evals = vec![Evaluation {
-            candidate_id: "ng".into(),
-            compile: failed(),
-            test: StageOutcome::Skipped,
-            lint: StageOutcome::Skipped,
-            lint_warnings: 0,
-            prop_test: StageOutcome::Skipped,
-            wasm: StageOutcome::Skipped,
-            wasm_fuel_used: None,
-            mutation: StageOutcome::Skipped,
-            mutation_caught: 0,
-            mutation_total: 0,
-            axes: AxisScores::default(),
-            score: 0.0,
-        }];
+        let mut e = eval_stub("ng");
+        e.compile = failed();
+        let mut evals = vec![e];
         assign_performance(&mut evals, &r);
         assert_eq!(evals[0].axes.performance, 0.0);
     }
 
     #[test]
     fn rank_orders_by_score_desc() {
-        let mk = |id: &str, s: f64| Evaluation {
-            candidate_id: id.into(),
-            compile: passed(1),
-            test: passed(1),
-            lint: StageOutcome::Skipped,
-            lint_warnings: 0,
-            prop_test: StageOutcome::Skipped,
-            wasm: StageOutcome::Skipped,
-            wasm_fuel_used: None,
-            mutation: StageOutcome::Skipped,
-            mutation_caught: 0,
-            mutation_total: 0,
-            axes: AxisScores::default(),
-            score: s,
+        let mk = |id: &str, s: f64| {
+            let mut e = eval_stub(id);
+            e.score = s;
+            e
         };
         let ranked = rank(vec![mk("a", 25.0), mk("b", 50.0), mk("c", 0.0)]);
         let ids: Vec<_> = ranked.iter().map(|e| e.candidate_id.as_str()).collect();
@@ -405,6 +428,7 @@ mod tests {
             &r,
             0, // mutation_caught
             0, // mutation_total → Skipped
+            0, // audit_findings
         );
         assert_eq!(a.correctness, r.correctness * 0.8);
     }
@@ -424,6 +448,7 @@ mod tests {
             &r,
             12, // mutation_caught
             12, // mutation_total
+            0, // audit_findings
         );
         assert!((a.correctness - r.correctness * 0.85).abs() < 1e-9);
     }
@@ -443,6 +468,7 @@ mod tests {
             &r,
             0,  // mutation_caught
             12, // mutation_total → 0%
+            0, // audit_findings
         );
         assert!((a.correctness - r.correctness * 0.60).abs() < 1e-9);
     }
@@ -462,8 +488,54 @@ mod tests {
             &r,
             9,  // mutation_caught
             12, // mutation_total
+            0, // audit_findings
         );
         let expected = r.correctness * (0.30 + 0.30 + 0.25 * 0.75);
         assert!((a.correctness - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn audit_findings_reduce_security() {
+        let r = Rubric::default();
+        let clean = axes_without_performance(
+            &passed(1), &passed(1),
+            &StageOutcome::Skipped, &StageOutcome::Skipped,
+            0, &StageOutcome::Skipped,
+            &metrics("fn f(){}"), &r, 0, 0,
+            0, // audit_findings = 0 → audit_sec = 1.0
+        );
+        let vuln = axes_without_performance(
+            &passed(1), &passed(1),
+            &StageOutcome::Skipped, &StageOutcome::Skipped,
+            0, &StageOutcome::Skipped,
+            &metrics("fn f(){}"), &r, 0, 0,
+            1, // audit_findings = 1 → audit_sec = 0.8
+        );
+        // security = rubric * (unsafe*0.4 + lint*0.3 + audit*0.3)
+        // clean: rubric * (1.0*0.4 + 1.0*0.3 + 1.0*0.3) = rubric * 1.0
+        // vuln:  rubric * (1.0*0.4 + 1.0*0.3 + 0.8*0.3) = rubric * 0.94
+        let expected = r.security * 0.94;
+        assert!((vuln.security - expected).abs() < 1e-9);
+        assert!(vuln.security < clean.security);
+    }
+
+    #[test]
+    fn bench_ns_preferred_over_compile_time_for_performance() {
+        let r = Rubric::default();
+        let mut fast = eval_stub("fast");
+        fast.bench_ns = Some(100);
+        fast.compile = passed(500);
+        fast.test = passed(500);
+        let mut slow = eval_stub("slow");
+        slow.bench_ns = Some(1000);
+        slow.compile = passed(10);
+        slow.test = passed(10);
+
+        let mut evals = vec![fast, slow];
+        assign_performance(&mut evals, &r);
+        // fast (bench=100ns) should score higher than slow (bench=1000ns)
+        let fast_score = evals.iter().find(|e| e.candidate_id == "fast").unwrap().axes.performance;
+        let slow_score = evals.iter().find(|e| e.candidate_id == "slow").unwrap().axes.performance;
+        assert!(fast_score > slow_score);
     }
 }

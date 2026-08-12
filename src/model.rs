@@ -113,6 +113,10 @@ pub struct Evaluation {
     pub mutation_caught: usize,
     /// ミューテーションテストで生成されたミュータント総数。
     pub mutation_total: usize,
+    /// cargo-audit が報告した脆弱性数（Rust 候補のみ）。
+    pub audit_findings: usize,
+    /// Criterion / #[bench] ベンチマークの中央値 (ns)。ベンチ未実行は None。
+    pub bench_ns: Option<u64>,
     /// 軸別の獲得点。
     pub axes: AxisScores,
     /// 0.0〜100.0 の総合スコア（= axes.total()）。

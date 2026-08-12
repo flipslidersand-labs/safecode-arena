@@ -1,7 +1,7 @@
 //! 検証パイプライン駆動。候補を一時 Cargo プロジェクトへ展開し、
 //! compile → test → 採点 までを実行する。
 
-use crate::analysis::{count_eslint_findings, count_go_vet_findings, count_lint_warnings, count_ruff_findings, count_staticcheck_findings, SourceMetrics};
+use crate::analysis::{count_eslint_findings, count_go_vet_findings, count_lint_warnings, count_ruff_findings, count_staticcheck_findings, has_bench, SourceMetrics};
 use crate::config::Rubric;
 use crate::model::{Candidate, Evaluation, Language, StageOutcome};
 use crate::{runner, scoring, wasm};
@@ -170,6 +170,10 @@ struct StageResults {
     mutation: StageOutcome,
     mutation_caught: usize,
     mutation_total: usize,
+    /// cargo-audit が報告した脆弱性数（Rust 候補のみ）。
+    audit_findings: usize,
+    /// Criterion / #[bench] ベンチマークの中央値 (ns)。未実行は None。
+    bench_ns: Option<u64>,
 }
 
 impl StageResults {
@@ -186,6 +190,8 @@ impl StageResults {
             mutation: StageOutcome::Skipped,
             mutation_caught: 0,
             mutation_total: 0,
+            audit_findings: 0,
+            bench_ns: None,
         }
     }
 }
@@ -241,6 +247,7 @@ fn assemble(candidate: &Candidate, r: StageResults, rubric: &Rubric) -> Evaluati
         rubric,
         r.mutation_caught,
         r.mutation_total,
+        r.audit_findings,
     );
     let score = axes.total();
     Evaluation {
@@ -255,12 +262,14 @@ fn assemble(candidate: &Candidate, r: StageResults, rubric: &Rubric) -> Evaluati
         mutation: r.mutation,
         mutation_caught: r.mutation_caught,
         mutation_total: r.mutation_total,
+        audit_findings: r.audit_findings,
+        bench_ns: r.bench_ns,
         axes,
         score,
     }
 }
 
-/// Rust 候補: 一時 Cargo プロジェクトで compile → test → lint(clippy) → prop_test → wasm → mutation。
+/// Rust 候補: compile → test → lint → prop_test → wasm → mutation → audit → bench。
 fn run_rust_stages(
     root: &Path,
     candidate: &Candidate,
@@ -320,6 +329,16 @@ fn run_rust_stages(
         (StageOutcome::Skipped, 0, 0)
     };
 
+    // audit: cargo-audit で依存関係の脆弱性を検出（compile 後に Cargo.lock が生成済み）
+    let audit_findings = run_cargo_audit(root, timeout);
+
+    // bench: Criterion / #[bench] がソースにあれば実行して中央値 (ns) を取得
+    let bench_ns = if has_bench(&candidate.source) {
+        run_bench_stage(root, timeout)
+    } else {
+        None
+    };
+
     Ok(StageResults {
         compile,
         test,
@@ -331,7 +350,98 @@ fn run_rust_stages(
         mutation,
         mutation_caught,
         mutation_total,
+        audit_findings,
+        bench_ns,
     })
+}
+
+/// `cargo audit --json` を実行し、脆弱性数を返す。
+///
+/// cargo-audit が PATH に無い、または Cargo.lock が無い場合は 0 を返す（減点なし）。
+fn run_cargo_audit(root: &Path, timeout: Duration) -> usize {
+    let audit_available = std::process::Command::new("cargo")
+        .args(["audit", "--version"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !audit_available {
+        return 0;
+    }
+    let mut cmd = Command::new("cargo");
+    cmd.args(["audit", "--json"]).current_dir(root);
+    // cargo audit は脆弱性あり / Cargo.lock 無し でも非ゼロ終了するため outcome は無視
+    let (_, stdout) = runner::run_stage_capture("audit", cmd, timeout);
+    parse_audit_json(&stdout)
+}
+
+/// `cargo audit --json` の stdout から脆弱性数を取り出す。
+fn parse_audit_json(stdout: &str) -> usize {
+    #[derive(serde::Deserialize)]
+    struct Vulns {
+        count: usize,
+    }
+    #[derive(serde::Deserialize)]
+    struct AuditOutput {
+        vulnerabilities: Vulns,
+    }
+    serde_json::from_str::<AuditOutput>(stdout)
+        .map(|a| a.vulnerabilities.count)
+        .unwrap_or(0)
+}
+
+/// Criterion / `#[bench]` ベンチマークを実行し、最初のベンチの中央値 (ns) を返す。
+///
+/// ベンチが無い、または失敗した場合は None。
+fn run_bench_stage(root: &Path, timeout: Duration) -> Option<u64> {
+    let mut cmd = Command::new("cargo");
+    cmd.arg("bench").current_dir(root);
+    // bench timeout は通常のテストより長めに取る
+    let bench_timeout = timeout * 2;
+    let (_, stdout) = runner::run_stage_capture("bench", cmd, bench_timeout);
+    parse_bench_median_ns(&stdout)
+}
+
+/// `cargo bench` / Criterion の出力から最初のベンチの中央値 (ns) を返す。
+///
+/// Criterion 形式: `bench_name    time:   [X.XXX µs Y.YYY µs Z.ZZZ µs]`
+/// 組み込み bench 形式: `test name ... bench:     1,234 ns/iter (+/- 56)`
+pub fn parse_bench_median_ns(output: &str) -> Option<u64> {
+    for line in output.lines() {
+        // Criterion: "time:   [low median high]" の中央値を取る
+        if let Some(pos) = line.find("time:") {
+            let rest = &line[pos + 5..];
+            if let (Some(start), Some(end)) = (rest.find('['), rest.find(']')) {
+                let bracket = &rest[start + 1..end];
+                let parts: Vec<&str> = bracket.split_whitespace().collect();
+                // [value unit value unit value unit] → 中央値は parts[2], parts[3]
+                if parts.len() >= 4 {
+                    if let Ok(v) = parts[2].replace(',', "").parse::<f64>() {
+                        let ns = match parts[3] {
+                            "ns" => v as u64,
+                            "µs" | "us" => (v * 1_000.0) as u64,
+                            "ms" => (v * 1_000_000.0) as u64,
+                            "s" => (v * 1_000_000_000.0) as u64,
+                            _ => continue,
+                        };
+                        return Some(ns);
+                    }
+                }
+            }
+        }
+        // 組み込み bench: "bench:     1,234 ns/iter (+/- 56)"
+        if let Some(pos) = line.find("bench:") {
+            let rest = line[pos + 6..].trim();
+            if let Some(ns_pos) = rest.find("ns/iter") {
+                let num_str = rest[..ns_pos].trim().replace(',', "");
+                if let Ok(ns) = num_str.parse::<u64>() {
+                    return Some(ns);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// `cargo mutants` で Rust 候補のミューテーションテストを実行する。
@@ -457,6 +567,8 @@ fn run_python_stages(
         mutation,
         mutation_caught,
         mutation_total,
+        audit_findings: 0,
+        bench_ns: None,
     })
 }
 
@@ -580,6 +692,8 @@ fn run_go_stages(
         mutation: StageOutcome::Skipped,
         mutation_caught: 0,
         mutation_total: 0,
+        audit_findings: 0,
+        bench_ns: None,
     })
 }
 
@@ -634,5 +748,54 @@ fn run_js_stages(
         mutation: StageOutcome::Skipped,
         mutation_caught: 0,
         mutation_total: 0,
+        audit_findings: 0,
+        bench_ns: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_audit_json_extracts_count() {
+        let json = r#"{"vulnerabilities":{"count":3},"warnings":{},"lockfile":{"dependency-count":42}}"#;
+        assert_eq!(parse_audit_json(json), 3);
+    }
+
+    #[test]
+    fn parse_audit_json_zero_when_clean() {
+        let json = r#"{"vulnerabilities":{"count":0},"warnings":{}}"#;
+        assert_eq!(parse_audit_json(json), 0);
+    }
+
+    #[test]
+    fn parse_audit_json_zero_on_invalid() {
+        assert_eq!(parse_audit_json("not json"), 0);
+        assert_eq!(parse_audit_json(""), 0);
+    }
+
+    #[test]
+    fn parse_bench_median_ns_criterion_microseconds() {
+        let out = "my_bench    time:   [1.100 µs 1.200 µs 1.300 µs]\n";
+        assert_eq!(parse_bench_median_ns(out), Some(1200));
+    }
+
+    #[test]
+    fn parse_bench_median_ns_criterion_nanoseconds() {
+        let out = "my_bench    time:   [800.00 ns 900.00 ns 1000.00 ns]\n";
+        assert_eq!(parse_bench_median_ns(out), Some(900));
+    }
+
+    #[test]
+    fn parse_bench_median_ns_builtin_bench() {
+        let out = "test bench_add ... bench:     1,234 ns/iter (+/- 56)\n";
+        assert_eq!(parse_bench_median_ns(out), Some(1234));
+    }
+
+    #[test]
+    fn parse_bench_median_ns_none_on_empty() {
+        assert_eq!(parse_bench_median_ns(""), None);
+        assert_eq!(parse_bench_median_ns("running 0 tests\n"), None);
+    }
 }

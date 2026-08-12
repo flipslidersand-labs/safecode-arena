@@ -145,6 +145,11 @@ pub fn count_eslint_findings(output: &str) -> usize {
         .count()
 }
 
+/// Rust ソースに Criterion ベンチマークまたは組み込み `#[bench]` が含まれるか判定する。
+pub fn has_bench(source: &str) -> bool {
+    source.contains("use criterion") || source.contains("extern crate criterion") || source.contains("#[bench]")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
