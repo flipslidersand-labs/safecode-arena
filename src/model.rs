@@ -115,6 +115,9 @@ pub struct Evaluation {
     pub mutation_total: usize,
     /// cargo-audit が検出した RUSTSEC 脆弱性数。Rust 以外 / Cargo.lock なしは 0。
     pub audit_findings: usize,
+    /// Criterion ベンチマークの平均実行時間 (ns)。bench が実行された場合のみ Some。
+    /// `assign_performance` で候補間の相対スコアに使う。
+    pub bench_ns: Option<u64>,
     /// 軸別の獲得点。
     pub axes: AxisScores,
     /// 0.0〜100.0 の総合スコア（= axes.total()）。

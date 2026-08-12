@@ -1,7 +1,7 @@
 //! 検証パイプライン駆動。候補を一時 Cargo プロジェクトへ展開し、
 //! compile → test → 採点 までを実行する。
 
-use crate::analysis::{count_eslint_findings, count_go_vet_findings, count_lint_warnings, count_ruff_findings, count_staticcheck_findings, SourceMetrics};
+use crate::analysis::{count_eslint_findings, count_go_vet_findings, count_lint_warnings, count_ruff_findings, count_staticcheck_findings, has_criterion_bench, SourceMetrics};
 use crate::config::Rubric;
 use crate::model::{Candidate, Evaluation, Language, StageOutcome};
 use crate::{runner, scoring, wasm};
@@ -53,6 +53,23 @@ path = "src/lib.rs"
 
 [dev-dependencies]
 proptest = "1"
+"#;
+
+/// Criterion を dev-dependency に持つ Cargo.toml（ベンチ用）。
+const CARGO_TOML_WITH_CRITERION: &str = r#"[package]
+name = "candidate"
+version = "0.0.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "criterion"
+harness = false
 "#;
 
 /// 候補ファイルを読み込んで `Candidate` を生成する。
@@ -171,6 +188,7 @@ struct StageResults {
     mutation_caught: usize,
     mutation_total: usize,
     audit_findings: usize,
+    bench_ns: Option<u64>,
 }
 
 impl StageResults {
@@ -188,6 +206,7 @@ impl StageResults {
             mutation_caught: 0,
             mutation_total: 0,
             audit_findings: 0,
+            bench_ns: None,
         }
     }
 }
@@ -197,6 +216,7 @@ impl StageResults {
 /// - compile が通らなかった場合、後続ステージはすべて `Skipped`。
 /// - `tests_dir`: 統合テストを置いたディレクトリ（任意）。
 /// - `prop_tests_dir`: proptest ファイルのディレクトリ（Rust のみ）。
+/// - `benches_dir`: Criterion ベンチファイル（`*.rs`）を置いたディレクトリ（Rust のみ）。
 /// - `wasm_opts`: Wasm サンドボックス実行のオプション（Rust のみ）。`entry` 指定時のみ実行。
 /// - `run_mutation`: true のとき Rust 候補に対して `cargo mutants` を実行する（デフォルト off）。
 pub fn evaluate_candidate(
@@ -205,6 +225,7 @@ pub fn evaluate_candidate(
     rubric: &Rubric,
     tests_dir: Option<&Path>,
     prop_tests_dir: Option<&Path>,
+    benches_dir: Option<&Path>,
     wasm_opts: &WasmOptions,
     run_mutation: bool,
 ) -> Result<Evaluation> {
@@ -218,6 +239,7 @@ pub fn evaluate_candidate(
             timeout,
             tests_dir,
             prop_tests_dir,
+            benches_dir,
             wasm_opts,
             run_mutation,
         )?,
@@ -259,23 +281,28 @@ fn assemble(candidate: &Candidate, r: StageResults, rubric: &Rubric) -> Evaluati
         mutation_caught: r.mutation_caught,
         mutation_total: r.mutation_total,
         audit_findings: r.audit_findings,
+        bench_ns: r.bench_ns,
         axes,
         score,
     }
 }
 
-/// Rust 候補: 一時 Cargo プロジェクトで compile → test → lint(clippy) → prop_test → wasm → mutation。
+/// Rust 候補: compile → test → lint(clippy) → prop_test → wasm → mutation → audit → bench。
 fn run_rust_stages(
     root: &Path,
     candidate: &Candidate,
     timeout: Duration,
     tests_dir: Option<&Path>,
     prop_tests_dir: Option<&Path>,
+    benches_dir: Option<&Path>,
     wasm_opts: &WasmOptions,
     run_mutation: bool,
 ) -> Result<StageResults> {
     fs::create_dir_all(root.join("src")).context("src ディレクトリの作成に失敗")?;
-    let toml = if prop_tests_dir.is_some() {
+    let use_criterion = benches_dir.is_some() || has_criterion_bench(&candidate.source);
+    let toml = if use_criterion {
+        CARGO_TOML_WITH_CRITERION
+    } else if prop_tests_dir.is_some() {
         CARGO_TOML_WITH_PROPTEST
     } else {
         CARGO_TOML_TEMPLATE
@@ -285,6 +312,9 @@ fn run_rust_stages(
         .context("候補ソースの書込に失敗")?;
     if let Some(dir) = tests_dir {
         copy_ext(dir, &root.join("tests"), "rs")?;
+    }
+    if let Some(dir) = benches_dir {
+        copy_ext(dir, &root.join("benches"), "rs")?;
     }
 
     let mut build = Command::new("cargo");
@@ -326,6 +356,12 @@ fn run_rust_stages(
 
     let audit_findings = run_cargo_audit(root, timeout);
 
+    let bench_ns = if use_criterion {
+        run_criterion_bench(root, timeout)
+    } else {
+        None
+    };
+
     Ok(StageResults {
         compile,
         test,
@@ -338,6 +374,7 @@ fn run_rust_stages(
         mutation_caught,
         mutation_total,
         audit_findings,
+        bench_ns,
     })
 }
 
@@ -466,6 +503,7 @@ fn run_python_stages(
         mutation_caught,
         mutation_total,
         audit_findings: 0,
+        bench_ns: None,
     })
 }
 
@@ -597,6 +635,7 @@ fn run_go_stages(
         mutation_caught,
         mutation_total,
         audit_findings: 0,
+        bench_ns: None,
     })
 }
 
@@ -707,6 +746,7 @@ fn run_js_stages(
         mutation_caught: 0,
         mutation_total: 0,
         audit_findings: 0,
+        bench_ns: None,
     })
 }
 
@@ -753,4 +793,99 @@ fn parse_audit_json(stdout: &str) -> Option<usize> {
         }
     }
     None
+}
+
+/// Criterion ベンチマークを実行し、全ベンチの平均実行時間 (ns) を返す。
+///
+/// - Criterion が設定されていない（ベンチファイルなし）場合は `None`。
+/// - 実行は `cargo bench -- --output-format criterion` だが、標準 text 出力を解析する。
+fn run_criterion_bench(root: &Path, timeout: Duration) -> Option<u64> {
+    let bench_timeout = timeout * 2;
+    let mut cmd = Command::new("cargo");
+    cmd.args(["bench"]).current_dir(root);
+    let (_outcome, output) = runner::run_stage_capture("bench", cmd, bench_timeout);
+    parse_criterion_output(&output)
+}
+
+/// Criterion の text 出力から全ベンチの平均実行時間 (ns) を取り出す。
+///
+/// Criterion は以下の形式で出力する:
+/// `<bench_name>  time:   [<low> <mean> <high>]`
+/// 単位は ns / µs / ms / s。複数ベンチがある場合は算術平均を返す。
+pub fn parse_criterion_output(output: &str) -> Option<u64> {
+    let mut total_ns: f64 = 0.0;
+    let mut count: usize = 0;
+
+    for line in output.lines() {
+        if let Some(rest) = line.split("time:").nth(1) {
+            if let Some(ns) = parse_time_bracket(rest) {
+                total_ns += ns;
+                count += 1;
+            }
+        }
+    }
+
+    if count > 0 {
+        Some((total_ns / count as f64) as u64)
+    } else {
+        None
+    }
+}
+
+/// `[<low> <mean> <high>]` から mean (ns) を取り出す。
+fn parse_time_bracket(s: &str) -> Option<f64> {
+    let inner = s.trim().trim_start_matches('[').split(']').next()?.trim();
+    let parts: Vec<&str> = inner.split_whitespace().collect();
+    // parts = ["1.2345", "µs", "1.2350", "µs", "1.2360", "µs"]  (6 tokens)
+    // mean = parts[2], unit = parts[3]
+    if parts.len() >= 4 {
+        let value: f64 = parts[2].parse().ok()?;
+        let unit = parts[3];
+        let ns = match unit {
+            "ns" => value,
+            "µs" | "us" => value * 1_000.0,
+            "ms" => value * 1_000_000.0,
+            "s" => value * 1_000_000_000.0,
+            _ => return None,
+        };
+        Some(ns)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_criterion_ns_unit() {
+        let output = "fib/10   time:   [123.00 ns 124.00 ns 125.00 ns]";
+        assert_eq!(parse_criterion_output(output), Some(124));
+    }
+
+    #[test]
+    fn parse_criterion_us_unit() {
+        let output = "sort/1000  time:   [1.2000 µs 1.2500 µs 1.3000 µs]";
+        let ns = parse_criterion_output(output).unwrap();
+        assert!((ns as f64 - 1250.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn parse_criterion_multiple_benches_averages() {
+        let output = "a  time:   [1000.0 ns 1000.0 ns 1001.0 ns]\nb  time:   [3000.0 ns 3000.0 ns 3001.0 ns]";
+        assert_eq!(parse_criterion_output(output), Some(2000));
+    }
+
+    #[test]
+    fn parse_criterion_no_match_returns_none() {
+        assert_eq!(parse_criterion_output("no benchmarks here"), None);
+    }
+
+    #[test]
+    fn has_criterion_bench_detects_use() {
+        assert!(has_criterion_bench("use criterion::Criterion;"));
+        assert!(has_criterion_bench("criterion_group!(benches, my_bench);"));
+        assert!(!has_criterion_bench("fn main() {}"));
+    }
 }

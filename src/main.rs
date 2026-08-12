@@ -73,6 +73,10 @@ enum Command {
         /// 実行時間が長いためデフォルト off。cargo-mutants が PATH にない場合は Skipped 扱い。
         #[arg(long)]
         mutation: bool,
+        /// Criterion ベンチファイル（`*.rs`）を置いたディレクトリ（Rust のみ）。
+        /// 指定すると `cargo bench` を実行し performance スコアを実測値ベースに切り替える。
+        #[arg(long)]
+        benches: Option<String>,
     },
     /// 保存済みの run 履歴を一覧表示する。
     History {
@@ -99,6 +103,7 @@ fn main() -> anyhow::Result<()> {
             wasm_fuel,
             wasm_max_memory_mb,
             mutation,
+            benches,
         } => run_evaluate(EvaluateArgs {
             candidates,
             tests,
@@ -113,6 +118,7 @@ fn main() -> anyhow::Result<()> {
             wasm_fuel,
             wasm_max_memory_mb,
             mutation,
+            benches,
         }),
         Command::History { db } => run_history(&db),
     }
@@ -133,6 +139,7 @@ struct EvaluateArgs {
     wasm_fuel: u64,
     wasm_max_memory_mb: usize,
     mutation: bool,
+    benches: Option<String>,
 }
 
 fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
@@ -143,6 +150,7 @@ fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
     let rubric = Rubric::load(args.config.as_deref())?;
     let tests_dir = args.tests.as_deref().map(Path::new);
     let prop_tests_dir = args.prop_tests.as_deref().map(Path::new);
+    let benches_dir = args.benches.as_deref().map(Path::new);
     let wasm_opts = pipeline::WasmOptions {
         entry: args.wasm_entry.as_deref(),
         fuel: args.wasm_fuel,
@@ -159,6 +167,7 @@ fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
             &rubric,
             tests_dir,
             prop_tests_dir,
+            benches_dir,
             &wasm_opts,
             args.mutation,
         )?);

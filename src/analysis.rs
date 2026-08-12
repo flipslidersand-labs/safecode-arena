@@ -118,6 +118,15 @@ pub fn count_staticcheck_findings(stdout: &str) -> usize {
         .count()
 }
 
+/// ソースが Criterion ベンチマークを使用しているか判定する。
+///
+/// `use criterion::` / `criterion_group!` / `criterion_main!` の存在で判定する。
+pub fn has_criterion_bench(source: &str) -> bool {
+    source.contains("use criterion::")
+        || source.contains("criterion_group!")
+        || source.contains("criterion_main!")
+}
+
 /// ESLint の出力から指摘件数を数える。
 ///
 /// `eslint --format compact` は末尾に `N problems` または `N problem` を出力する。

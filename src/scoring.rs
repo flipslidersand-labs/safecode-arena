@@ -125,29 +125,52 @@ pub fn axes_without_performance(
     }
 }
 
-/// 候補集合の compile+test 所要時間を相対比較し、performance 軸を付与する。
-/// 最速候補に満点、それ以外は `min_time / own_time` で按分。
-/// compile か test が通っていない候補は performance 0。
+/// 候補集合の performance 軸を付与する。
+///
+/// **優先**: compile した全候補が `bench_ns`（Criterion 実測値）を持つ場合は
+/// それを相対比較する（小さいほど速い = 高スコア）。
+///
+/// **フォールバック**: bench_ns が揃わない場合は compile+test 所要時間で比較。
+///
 /// 付与後、各 `score` を `axes.total()` で再計算する。
 pub fn assign_performance(evals: &mut [Evaluation], rubric: &Rubric) {
-    let times: Vec<Option<u64>> = evals
-        .iter()
-        .map(|e| match (e.compile.duration_ms(), e.test.duration_ms()) {
-            (Some(c), Some(t)) => Some(c + t),
-            _ => None,
-        })
-        .collect();
+    let all_have_bench = !evals.is_empty()
+        && evals
+            .iter()
+            .filter(|e| e.compile.is_passed())
+            .all(|e| e.bench_ns.is_some());
 
-    let fastest = times.iter().flatten().copied().min();
+    if all_have_bench {
+        let min_ns = evals.iter().filter_map(|e| e.bench_ns).min();
+        for e in evals.iter_mut() {
+            let ratio = match (e.bench_ns, min_ns) {
+                (Some(t), Some(min)) if t > 0 => min as f64 / t as f64,
+                (Some(_), Some(_)) => 1.0,
+                _ => 0.0,
+            };
+            e.axes.performance = rubric.performance * ratio;
+            e.score = e.axes.total();
+        }
+    } else {
+        let times: Vec<Option<u64>> = evals
+            .iter()
+            .map(|e| match (e.compile.duration_ms(), e.test.duration_ms()) {
+                (Some(c), Some(t)) => Some(c + t),
+                _ => None,
+            })
+            .collect();
 
-    for (e, time) in evals.iter_mut().zip(times.iter()) {
-        let ratio = match (time, fastest) {
-            (Some(t), Some(min)) if *t > 0 => min as f64 / *t as f64,
-            (Some(_), Some(_)) => 1.0, // 0ms は満点扱い
-            _ => 0.0,
-        };
-        e.axes.performance = rubric.performance * ratio;
-        e.score = e.axes.total();
+        let fastest = times.iter().flatten().copied().min();
+
+        for (e, time) in evals.iter_mut().zip(times.iter()) {
+            let ratio = match (time, fastest) {
+                (Some(t), Some(min)) if *t > 0 => min as f64 / *t as f64,
+                (Some(_), Some(_)) => 1.0,
+                _ => 0.0,
+            };
+            e.axes.performance = rubric.performance * ratio;
+            e.score = e.axes.total();
+        }
     }
 }
 
@@ -346,6 +369,7 @@ mod tests {
             mutation_caught: 0,
             mutation_total: 0,
             audit_findings: 0,
+            bench_ns: None,
             axes: AxisScores::default(),
             score: 0.0,
         };
@@ -372,6 +396,7 @@ mod tests {
             mutation_caught: 0,
             mutation_total: 0,
             audit_findings: 0,
+            bench_ns: None,
             axes: AxisScores::default(),
             score: 0.0,
         }];
@@ -394,6 +419,7 @@ mod tests {
             mutation_caught: 0,
             mutation_total: 0,
             audit_findings: 0,
+            bench_ns: None,
             axes: AxisScores::default(),
             score: s,
         };
@@ -483,5 +509,59 @@ mod tests {
         );
         let expected = r.correctness * (0.30 + 0.30 + 0.25 * 0.75);
         assert!((a.correctness - expected).abs() < 1e-9);
+    }
+
+    // ── Phase 10: Criterion benchmark ────────────────────────────────────────
+
+    #[test]
+    fn bench_ns_used_for_performance_when_all_have_it() {
+        let r = Rubric::default();
+        let mk = |id: &str, ns: u64| Evaluation {
+            candidate_id: id.into(),
+            compile: passed(1),
+            test: passed(1),
+            lint: StageOutcome::Skipped,
+            lint_warnings: 0,
+            prop_test: StageOutcome::Skipped,
+            wasm: StageOutcome::Skipped,
+            wasm_fuel_used: None,
+            mutation: StageOutcome::Skipped,
+            mutation_caught: 0,
+            mutation_total: 0,
+            audit_findings: 0,
+            bench_ns: Some(ns),
+            axes: AxisScores::default(),
+            score: 0.0,
+        };
+        let mut evals = vec![mk("fast", 1_000), mk("slow", 4_000)];
+        assign_performance(&mut evals, &r);
+        assert_eq!(evals[0].axes.performance, r.performance);
+        assert!((evals[1].axes.performance - r.performance * 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn fallback_to_time_when_bench_ns_missing() {
+        let r = Rubric::default();
+        let mk = |id: &str, c: u64, t: u64| Evaluation {
+            candidate_id: id.into(),
+            compile: passed(c),
+            test: passed(t),
+            lint: StageOutcome::Skipped,
+            lint_warnings: 0,
+            prop_test: StageOutcome::Skipped,
+            wasm: StageOutcome::Skipped,
+            wasm_fuel_used: None,
+            mutation: StageOutcome::Skipped,
+            mutation_caught: 0,
+            mutation_total: 0,
+            audit_findings: 0,
+            bench_ns: None,
+            axes: AxisScores::default(),
+            score: 0.0,
+        };
+        let mut evals = vec![mk("fast", 10, 10), mk("slow", 30, 30)];
+        assign_performance(&mut evals, &r);
+        assert_eq!(evals[0].axes.performance, r.performance);
+        assert!((evals[1].axes.performance - r.performance / 3.0).abs() < 1e-9);
     }
 }
