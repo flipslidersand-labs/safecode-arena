@@ -636,3 +636,138 @@ fn run_js_stages(
         mutation_total: 0,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- parse_mutmut_json ---
+
+    #[test]
+    fn parse_mutmut_json_extracts_caught_and_total() {
+        let out = r#"{"caught": 3, "total_mutants": 5}"#;
+        assert_eq!(parse_mutmut_json(out), Some((3, 5)));
+    }
+
+    #[test]
+    fn parse_mutmut_json_all_caught() {
+        let out = r#"{"caught": 7, "total_mutants": 7}"#;
+        assert_eq!(parse_mutmut_json(out), Some((7, 7)));
+    }
+
+    #[test]
+    fn parse_mutmut_json_none_caught() {
+        let out = r#"{"caught": 0, "total_mutants": 4}"#;
+        assert_eq!(parse_mutmut_json(out), Some((0, 4)));
+    }
+
+    #[test]
+    fn parse_mutmut_json_ignores_progress_noise_before_json() {
+        // mutmut が進捗ログを混在させるケース: 最後の JSON 行を採用する
+        let out = "Running mutation 1/5...\nRunning mutation 2/5...\n{\"caught\": 2, \"total_mutants\": 5}";
+        assert_eq!(parse_mutmut_json(out), Some((2, 5)));
+    }
+
+    #[test]
+    fn parse_mutmut_json_returns_none_on_empty() {
+        assert_eq!(parse_mutmut_json(""), None);
+    }
+
+    #[test]
+    fn parse_mutmut_json_returns_none_on_plain_text() {
+        let out = "All mutants were killed.\nNo JSON here.";
+        assert_eq!(parse_mutmut_json(out), None);
+    }
+
+    #[test]
+    fn parse_mutmut_json_returns_none_on_malformed_json() {
+        // "total" ではなく "total_mutants" が正しいフィールド名
+        let out = r#"{"caught": 3, "total": 5}"#;
+        assert_eq!(parse_mutmut_json(out), None);
+    }
+
+    #[test]
+    fn parse_mutmut_json_picks_last_json_line() {
+        // 複数 JSON 行がある場合は最後を優先
+        let out = "{\"caught\": 1, \"total_mutants\": 2}\n{\"caught\": 3, \"total_mutants\": 5}";
+        assert_eq!(parse_mutmut_json(out), Some((3, 5)));
+    }
+
+    // --- mutation 統合: run_python_stages の mutation フィールド伝播 ---
+    // Python は test.is_passed() のときのみ run_python_mutation を呼ぶ設計。
+    // mutmut が PATH に無い場合は Skipped を返すため、CI でも安全に実行できる。
+
+    #[test]
+    fn python_stages_mutation_skipped_when_compile_fails() {
+        // 構文エラー → compile 失敗 → 後続ステージは全て Skipped
+        let src = "def broken(:\n    pass\n"; // 意図的な構文エラー
+        let candidate = Candidate {
+            id: "syntax-err".into(),
+            source: src.into(),
+            language: Language::Python,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let results =
+            run_python_stages(dir.path(), &candidate, Duration::from_secs(30), None).unwrap();
+        assert!(matches!(results.compile, StageOutcome::Failed { .. }));
+        assert!(
+            matches!(results.mutation, StageOutcome::Skipped),
+            "compile 失敗時は mutation も Skipped"
+        );
+        assert_eq!(results.mutation_caught, 0);
+        assert_eq!(results.mutation_total, 0);
+    }
+
+    #[test]
+    fn python_stages_mutation_skipped_when_test_fails() {
+        // コンパイルは通るがテストが失敗する場合、mutation は実行しない
+        let src =
+            "def broken():\n    raise RuntimeError('fail')\n\ndef test_broken():\n    broken()\n";
+        let candidate = Candidate {
+            id: "broken".into(),
+            source: src.into(),
+            language: Language::Python,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let results =
+            run_python_stages(dir.path(), &candidate, Duration::from_secs(30), None).unwrap();
+        assert!(
+            matches!(results.mutation, StageOutcome::Skipped),
+            "test 失敗時は mutation を実行しない"
+        );
+        assert_eq!(results.mutation_caught, 0);
+        assert_eq!(results.mutation_total, 0);
+    }
+
+    #[test]
+    fn python_stages_mutation_skipped_when_mutmut_unavailable() {
+        // テストが通り mutmut が PATH に無い → mutation は Skipped
+        // CI 環境でも安全に動作する前提条件の確認
+        // (mutmut がインストールされている環境ではこのテストはスキップ相当)
+        if std::process::Command::new("mutmut")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            return; // mutmut がある環境では別の動作になるため skip
+        }
+        let src = "def add(a, b):\n    return a + b\n";
+        let candidate = Candidate {
+            id: "add".into(),
+            source: src.into(),
+            language: Language::Python,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let results =
+            run_python_stages(dir.path(), &candidate, Duration::from_secs(30), None).unwrap();
+        assert!(
+            matches!(results.mutation, StageOutcome::Skipped),
+            "mutmut が無い場合は mutation は Skipped"
+        );
+        assert_eq!(results.mutation_caught, 0);
+        assert_eq!(results.mutation_total, 0);
+    }
+}
