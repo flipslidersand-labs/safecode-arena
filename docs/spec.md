@@ -34,13 +34,13 @@ Fuzzing
 
 ## 評価軸（採点ルーブリック）
 
-| 軸              | 重み | 実装状況                                                                            |
-| --------------- | ---- | ----------------------------------------------------------------------------------- |
-| correctness     | 50   | ✅ compile 40% + test 40% + prop_test 20%（mutation 有効時: 30+30+15+mutation 25%） |
-| security        | 20   | ✅ unsafe ヒューリスティック 50% + clippy 50%                                       |
-| performance     | 15   | ✅ 候補間 compile+test 時間の相対比較                                               |
-| maintainability | 10   | ✅ 関数長ヒューリスティック 60% + clippy 40%                                        |
-| resource_usage  | 5    | ✅ Wasm サンドボックス実行の成否                                                    |
+| 軸              | 重み | 実装状況                                                                                                                                                                                    |
+| --------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| correctness     | 50   | ✅ compile 40% + test 40% + prop_test 20%（mutation 有効時: 30+30+15+mutation 25%）<br>mutation: Rust=`cargo-mutants`、Python=`mutmut`、Go=`gremlins`（各ツールが PATH になければ Skipped） |
+| security        | 20   | ✅ unsafe ヒューリスティック 50% + clippy 50%                                                                                                                                               |
+| performance     | 15   | ✅ 候補間 compile+test 時間の相対比較                                                                                                                                                       |
+| maintainability | 10   | ✅ 関数長ヒューリスティック 60% + clippy 40%                                                                                                                                                |
+| resource_usage  | 5    | ✅ Wasm サンドボックス実行の成否                                                                                                                                                            |
 
 ## MVP の境界線
 
