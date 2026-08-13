@@ -50,7 +50,11 @@ pub fn parse_candidates(output: &str) -> Vec<String> {
             let rest = &s[start..];
             let end = rest.find("```")?;
             let code = rest[..end].trim().to_string();
-            if code.is_empty() { None } else { Some(code) }
+            if code.is_empty() {
+                None
+            } else {
+                Some(code)
+            }
         })
         .collect()
 }
@@ -103,10 +107,8 @@ fn call_claude_generate(prompt: &str) -> Option<String> {
 }
 
 fn call_ollama_generate(prompt: &str) -> Option<String> {
-    let host =
-        std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://localhost:11434".into());
-    let model =
-        std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "qwen2.5-coder:7b".into());
+    let host = std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://localhost:11434".into());
+    let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "qwen2.5-coder:7b".into());
 
     let body = serde_json::json!({
         "model": model,
