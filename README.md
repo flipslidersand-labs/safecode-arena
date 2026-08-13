@@ -39,6 +39,13 @@ safecode evaluate solution.py --tests py_tests/
 safecode evaluate solution.go --tests tests/
 safecode evaluate solution.js
 safecode evaluate cand.rs cand.py cand.go    # cross-language comparison in one run
+
+# LLM semantic review (reasoning axis)
+safecode evaluate candidate.rs --llm-review
+
+# Generate N candidates from a spec file, evaluate, and rank
+safecode generate examples/specs/fibonacci.md --candidates 3
+safecode generate myspec.md --candidates 5 --out report.md --format json
 ```
 
 ### Supported languages
@@ -56,12 +63,23 @@ safecode evaluate cand.rs cand.py cand.go    # cross-language comparison in one 
 | Axis            | Weight | How it's computed                                                                       |
 | --------------- | ------ | --------------------------------------------------------------------------------------- |
 | correctness     | 50     | compile 40% + tests 40% + prop tests 20% (with `--mutation`: 30% + 30% + 15% + 25% mut) |
-| security        | 20     | `unsafe` heuristics 50% + clippy 50%                                                    |
-| performance     | 15     | relative compile+test time across candidates                                            |
+| security        | 20     | `unsafe` heuristics 40% + clippy/lint 30% + `cargo audit` 30%                          |
+| performance     | 15     | `bench_ns` (Criterion) preferred; falls back to relative compile+test time              |
 | maintainability | 10     | function-length heuristics 60% + clippy 40%                                             |
 | resource_usage  | 5      | pass/fail of sandboxed Wasm (wasm32-wasip1) execution                                   |
+| reasoning       | —      | LLM semantic review score (enabled with `--llm-review`, `SAFECODE_LLM_BACKEND`)         |
 
 Weights can be overridden via `[weights]` in `safecode.toml`.
+
+## Environment Variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SAFECODE_LLM_BACKEND` | `claude` | `claude` or `ollama` — selects LLM for `--llm-review` and `generate` |
+| `ANTHROPIC_API_KEY` | — | Required when `SAFECODE_LLM_BACKEND=claude` |
+| `ANTHROPIC_MODEL` | `claude-haiku-4-5-20251001` | Claude model to use |
+| `OLLAMA_HOST` | `http://localhost:11434` | Ollama API endpoint |
+| `OLLAMA_MODEL` | `qwen2.5-coder:7b` | Ollama model for code generation/review |
 
 ## Development
 
@@ -82,7 +100,7 @@ cargo fmt
 
 ## Status
 
-✅ Phases 1–11 complete. All 5 scoring axes measured. SQLite persistence + regression detection. Wasm sandbox. **Multi-language**: Rust / Python / Go / JavaScript auto-detected by extension. **Mutation testing**: Rust (`cargo-mutants`), Python (`mutmut`), Go (`gremlins`) integrated and weight-aware. **Criterion benchmarks** integrated for performance axis. GitHub Actions CI with regression detection.
+✅ Phases 1–15 complete. All scoring axes measured. SQLite persistence + regression detection. Wasm sandbox. **Multi-language**: Rust / Python / Go / JavaScript / TypeScript auto-detected by extension. **Mutation testing**: Rust (`cargo-mutants`), Python (`mutmut`), Go (`gremlins`) integrated and weight-aware. **Criterion benchmarks** integrated for performance axis. **LLM semantic review** (Claude/Ollama) for reasoning axis. **`generate` command**: produce N candidates from a natural-language spec and rank them automatically. GitHub Actions CI with regression detection.
 
 ## License
 
