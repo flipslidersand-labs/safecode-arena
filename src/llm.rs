@@ -1,12 +1,13 @@
 //! LLM セマンティックレビュークライアント（phase14）。
 //!
+//! HTTP 基盤は `llm_client` モジュールを共有。
 //! バックエンドは環境変数 `SAFECODE_LLM_BACKEND` で切り替える:
 //! - `claude` (既定): Anthropic API。`ANTHROPIC_API_KEY` 必須。
-//! - `ollama`: ローカル Ollama。`OLLAMA_HOST` (既定 localhost:11434)、
-//!   `OLLAMA_MODEL` (既定 qwen2.5-coder:7b)。
+//! - `ollama`: ローカル Ollama。`OLLAMA_HOST` / `OLLAMA_MODEL` 参照。
 //!
 //! LLM が利用不能 / タイムアウト / JSON パース失敗の場合は `None` を返す（採点に影響しない）。
 
+use crate::llm_client;
 use serde::Deserialize;
 
 const PROMPT_TEMPLATE: &str = r#"You are a strict code reviewer evaluating AI-generated code.
@@ -66,50 +67,6 @@ fn parse_review(text: &str) -> Option<LlmReview> {
     Some(LlmReview { score, comment })
 }
 
-// ── Claude backend ────────────────────────────────────────────────────────────
-
-fn call_claude(prompt: &str, api_key: &str) -> Option<LlmReview> {
-    let model = std::env::var("ANTHROPIC_MODEL")
-        .unwrap_or_else(|_| "claude-haiku-4-5-20251001".to_string());
-    let body = serde_json::json!({
-        "model": model,
-        "max_tokens": 256,
-        "messages": [{"role": "user", "content": prompt}]
-    });
-    let resp = ureq::post("https://api.anthropic.com/v1/messages")
-        .set("x-api-key", api_key)
-        .set("anthropic-version", "2023-06-01")
-        .set("content-type", "application/json")
-        .timeout(std::time::Duration::from_secs(30))
-        .send_json(body)
-        .ok()?;
-    let json: serde_json::Value = resp.into_json().ok()?;
-    let text = json["content"][0]["text"].as_str()?;
-    parse_review(text)
-}
-
-// ── Ollama backend ────────────────────────────────────────────────────────────
-
-fn call_ollama(prompt: &str) -> Option<LlmReview> {
-    let host =
-        std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://localhost:11434".to_string());
-    let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "qwen2.5-coder:7b".to_string());
-    let url = format!("{host}/api/generate");
-    let body = serde_json::json!({
-        "model": model,
-        "prompt": prompt,
-        "stream": false,
-        "format": "json"
-    });
-    let resp = ureq::post(&url)
-        .timeout(std::time::Duration::from_secs(60))
-        .send_json(body)
-        .ok()?;
-    let json: serde_json::Value = resp.into_json().ok()?;
-    let text = json["response"].as_str()?;
-    parse_review(text)
-}
-
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// ソースコードと test 結果を LLM に送り、レビュースコアを得る。
@@ -117,16 +74,11 @@ fn call_ollama(prompt: &str) -> Option<LlmReview> {
 /// LLM が利用不能・タイムアウト・パース失敗のときは `None`（採点影響なし）。
 pub fn review(source: &str, test_passed: bool) -> Option<LlmReview> {
     let prompt = build_prompt(source, test_passed);
-    let backend = std::env::var("SAFECODE_LLM_BACKEND")
-        .unwrap_or_else(|_| "claude".to_string())
-        .to_lowercase();
-    match backend.as_str() {
-        "ollama" => call_ollama(&prompt),
-        _ => {
-            let key = std::env::var("ANTHROPIC_API_KEY").ok()?;
-            call_claude(&prompt, &key)
-        }
-    }
+    let text = match llm_client::backend().as_str() {
+        "ollama" => llm_client::post_ollama(&prompt, true, std::time::Duration::from_secs(60))?,
+        _ => llm_client::post_claude(&prompt, 256, std::time::Duration::from_secs(30))?,
+    };
+    parse_review(&text)
 }
 
 #[cfg(test)]
