@@ -848,12 +848,21 @@ fn run_ts_stages(
         return Ok(StageResults::skipped_after_compile(compile));
     }
 
-    // test: JS にトランスパイルしてから node --test で実行
-    let mut t = Command::new("sh");
-    t.arg("-c")
-        .arg(r#"tsc && node --test dist/candidate.js $(ls dist/*.test.js 2>/dev/null) 1>&2"#)
-        .current_dir(root);
-    let test = runner::run_stage("test", t, timeout);
+    // test: JS にトランスパイルしてから node --test でテストファイルのみ実行
+    // candidate.js は渡さない（node --test はテストファイルとして実行するため副作用が起きる）
+    let test_files_exist = tests_dir.is_some()
+        && tests_dir
+            .map(|d| d.read_dir().ok().map(|mut e| e.next().is_some()).unwrap_or(false))
+            .unwrap_or(false);
+    let test = if test_files_exist {
+        let mut t = Command::new("sh");
+        t.arg("-c")
+            .arg(r#"tsc && node --test $(ls dist/*.test.js 2>/dev/null) 1>&2"#)
+            .current_dir(root);
+        runner::run_stage("test", t, timeout)
+    } else {
+        StageOutcome::Skipped
+    };
 
     // lint: ESLint があれば TypeScript 向けルールで実行
     let (lint, lint_warnings) = if eslint_available() {

@@ -61,10 +61,11 @@ pub fn parse_candidates(output: &str) -> Vec<String> {
 
 /// spec テキストから N 候補の Rust ソースを生成する。
 ///
+/// `llm_timeout`: LLM 呼び出し 1 回あたりのタイムアウト。
 /// 生成に失敗した場合や候補数が足りない場合でも取得できた分を返す。
-pub fn generate(spec: &str, n: usize) -> Vec<String> {
+pub fn generate(spec: &str, n: usize, llm_timeout: std::time::Duration) -> Vec<String> {
     let prompt = build_generate_prompt(spec, n);
-    let raw = call_llm(&prompt);
+    let raw = call_llm(&prompt, llm_timeout);
     match raw {
         Some(text) => {
             let candidates = parse_candidates(&text);
@@ -75,15 +76,15 @@ pub fn generate(spec: &str, n: usize) -> Vec<String> {
 }
 
 /// LLM バックエンドを選択してテキスト生成する（review と同じ環境変数）。
-fn call_llm(prompt: &str) -> Option<String> {
+fn call_llm(prompt: &str, timeout: std::time::Duration) -> Option<String> {
     let backend = std::env::var("SAFECODE_LLM_BACKEND").unwrap_or_else(|_| "claude".into());
     match backend.as_str() {
-        "ollama" => call_ollama_generate(prompt),
-        _ => call_claude_generate(prompt),
+        "ollama" => call_ollama_generate(prompt, timeout),
+        _ => call_claude_generate(prompt, timeout),
     }
 }
 
-fn call_claude_generate(prompt: &str) -> Option<String> {
+fn call_claude_generate(prompt: &str, timeout: std::time::Duration) -> Option<String> {
     let api_key = std::env::var("ANTHROPIC_API_KEY").ok()?;
     let model =
         std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| "claude-haiku-4-5-20251001".into());
@@ -98,7 +99,7 @@ fn call_claude_generate(prompt: &str) -> Option<String> {
         .set("x-api-key", &api_key)
         .set("anthropic-version", "2023-06-01")
         .set("content-type", "application/json")
-        .timeout(std::time::Duration::from_secs(120))
+        .timeout(timeout)
         .send_json(body)
         .ok()?;
 
@@ -106,7 +107,7 @@ fn call_claude_generate(prompt: &str) -> Option<String> {
     json["content"][0]["text"].as_str().map(|s| s.to_string())
 }
 
-fn call_ollama_generate(prompt: &str) -> Option<String> {
+fn call_ollama_generate(prompt: &str, timeout: std::time::Duration) -> Option<String> {
     let host = std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://localhost:11434".into());
     let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "qwen2.5-coder:7b".into());
 
@@ -118,7 +119,7 @@ fn call_ollama_generate(prompt: &str) -> Option<String> {
 
     let resp = ureq::post(&format!("{host}/api/generate"))
         .set("content-type", "application/json")
-        .timeout(std::time::Duration::from_secs(180))
+        .timeout(timeout)
         .send_json(body)
         .ok()?;
 

@@ -89,9 +89,12 @@ enum Command {
         /// 生成する候補数。
         #[arg(long, default_value_t = 3)]
         candidates: usize,
-        /// タイムアウト（秒）。
+        /// 評価ステージ（compile/test 等）のタイムアウト秒数。
         #[arg(long, default_value_t = 30)]
         timeout_secs: u64,
+        /// LLM 候補生成呼び出しのタイムアウト秒数（Claude 既定 120、Ollama 既定 180 の代わりに使用）。
+        #[arg(long, default_value_t = 120)]
+        llm_timeout_secs: u64,
         /// レポート出力先ファイル（省略時は stdout）。
         #[arg(long)]
         out: Option<String>,
@@ -148,10 +151,11 @@ fn main() -> anyhow::Result<()> {
             spec,
             candidates,
             timeout_secs,
+            llm_timeout_secs,
             out,
             format,
             config,
-        } => run_generate(spec, candidates, timeout_secs, out, format, config),
+        } => run_generate(spec, candidates, timeout_secs, llm_timeout_secs, out, format, config),
         Command::History { db } => run_history(&db),
     }
 }
@@ -271,6 +275,7 @@ fn run_generate(
     spec_path: String,
     n: usize,
     timeout_secs: u64,
+    llm_timeout_secs: u64,
     out: Option<String>,
     format: Format,
     config: Option<String>,
@@ -281,7 +286,8 @@ fn run_generate(
     eprintln!("[generate] spec: {spec_path} ({} chars)", spec.len());
     eprintln!("[generate] {n} 候補を生成中 ...");
 
-    let sources = generator::generate(&spec, n);
+    let llm_timeout = Duration::from_secs(llm_timeout_secs);
+    let sources = generator::generate(&spec, n, llm_timeout);
     if sources.is_empty() {
         anyhow::bail!("LLM からコード候補を取得できませんでした。SAFECODE_LLM_BACKEND / API キーを確認してください。");
     }
