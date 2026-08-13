@@ -228,7 +228,6 @@ pub struct EvalOptions<'a> {
     pub run_llm_review: bool,
 }
 
-
 /// 1 候補を一時ディレクトリへ展開し、言語に応じた検証ステージを実行して採点する。
 ///
 /// compile が通らなかった場合、後続ステージはすべて `Skipped`。
@@ -254,9 +253,7 @@ pub fn evaluate_candidate(
         Language::Python => {
             run_python_stages(root, candidate, timeout, opts.tests_dir, opts.run_mutation)?
         }
-        Language::Go => {
-            run_go_stages(root, candidate, timeout, opts.tests_dir, opts.run_mutation)?
-        }
+        Language::Go => run_go_stages(root, candidate, timeout, opts.tests_dir, opts.run_mutation)?,
         Language::JavaScript => run_js_stages(root, candidate, timeout, opts.tests_dir)?,
         Language::TypeScript => run_ts_stages(root, candidate, timeout, opts.tests_dir)?,
     };

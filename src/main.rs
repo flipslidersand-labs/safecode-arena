@@ -196,7 +196,9 @@ fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
     for path in &args.candidates {
         let candidate = pipeline::load_candidate(Path::new(path))?;
         eprintln!("評価中: {} ...", candidate.id);
-        evals.push(pipeline::evaluate_candidate(&candidate, timeout, &rubric, &eval_opts)?);
+        evals.push(pipeline::evaluate_candidate(
+            &candidate, timeout, &rubric, &eval_opts,
+        )?);
     }
 
     scoring::assign_performance(&mut evals, &rubric);
@@ -289,8 +291,17 @@ fn run_generate(
     for (i, source) in sources.iter().enumerate() {
         let id = format!("candidate_{}", i + 1);
         eprintln!("[evaluate] {} ...", id);
-        let candidate = Candidate { id, source: source.clone(), language: Language::Rust };
-        match pipeline::evaluate_candidate(&candidate, timeout, &rubric, &pipeline::EvalOptions::default()) {
+        let candidate = Candidate {
+            id,
+            source: source.clone(),
+            language: Language::Rust,
+        };
+        match pipeline::evaluate_candidate(
+            &candidate,
+            timeout,
+            &rubric,
+            &pipeline::EvalOptions::default(),
+        ) {
             Ok(eval) => evals.push(eval),
             Err(e) => eprintln!("[warn] {} の評価失敗: {e}", candidate.id),
         }
