@@ -180,28 +180,23 @@ fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
     }
     let timeout = Duration::from_secs(args.timeout_secs);
     let rubric = Rubric::load(args.config.as_deref())?;
-    let tests_dir = args.tests.as_deref().map(Path::new);
-    let prop_tests_dir = args.prop_tests.as_deref().map(Path::new);
-    let wasm_opts = pipeline::WasmOptions {
-        entry: args.wasm_entry.as_deref(),
-        fuel: args.wasm_fuel,
-        max_memory_bytes: args.wasm_max_memory_mb * 1024 * 1024,
+    let eval_opts = pipeline::EvalOptions {
+        tests_dir: args.tests.as_deref().map(Path::new),
+        prop_tests_dir: args.prop_tests.as_deref().map(Path::new),
+        wasm_opts: pipeline::WasmOptions {
+            entry: args.wasm_entry.as_deref(),
+            fuel: args.wasm_fuel,
+            max_memory_bytes: args.wasm_max_memory_mb * 1024 * 1024,
+        },
+        run_mutation: args.mutation,
+        run_llm_review: args.llm_review,
     };
 
     let mut evals = Vec::with_capacity(args.candidates.len());
     for path in &args.candidates {
         let candidate = pipeline::load_candidate(Path::new(path))?;
         eprintln!("評価中: {} ...", candidate.id);
-        evals.push(pipeline::evaluate_candidate(
-            &candidate,
-            timeout,
-            &rubric,
-            tests_dir,
-            prop_tests_dir,
-            &wasm_opts,
-            args.mutation,
-            args.llm_review,
-        )?);
+        evals.push(pipeline::evaluate_candidate(&candidate, timeout, &rubric, &eval_opts)?);
     }
 
     scoring::assign_performance(&mut evals, &rubric);
@@ -289,14 +284,13 @@ fn run_generate(
 
     let timeout = Duration::from_secs(timeout_secs);
     let rubric = Rubric::load(config.as_deref())?;
-    let wasm_opts = pipeline::WasmOptions::default();
 
     let mut evals = Vec::with_capacity(sources.len());
     for (i, source) in sources.iter().enumerate() {
         let id = format!("candidate_{}", i + 1);
         eprintln!("[evaluate] {} ...", id);
         let candidate = Candidate { id, source: source.clone(), language: Language::Rust };
-        match pipeline::evaluate_candidate(&candidate, timeout, &rubric, None, None, &wasm_opts, false, false) {
+        match pipeline::evaluate_candidate(&candidate, timeout, &rubric, &pipeline::EvalOptions::default()) {
             Ok(eval) => evals.push(eval),
             Err(e) => eprintln!("[warn] {} の評価失敗: {e}", candidate.id),
         }

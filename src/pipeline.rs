@@ -218,23 +218,25 @@ impl StageResults {
     }
 }
 
+/// `evaluate_candidate` に渡すオプション群。
+#[derive(Default)]
+pub struct EvalOptions<'a> {
+    pub tests_dir: Option<&'a Path>,
+    pub prop_tests_dir: Option<&'a Path>,
+    pub wasm_opts: WasmOptions<'a>,
+    pub run_mutation: bool,
+    pub run_llm_review: bool,
+}
+
+
 /// 1 候補を一時ディレクトリへ展開し、言語に応じた検証ステージを実行して採点する。
 ///
-/// - compile が通らなかった場合、後続ステージはすべて `Skipped`。
-/// - `tests_dir`: 統合テストを置いたディレクトリ（任意）。
-/// - `prop_tests_dir`: proptest ファイルのディレクトリ（Rust のみ）。
-/// - `wasm_opts`: Wasm サンドボックス実行のオプション（Rust のみ）。`entry` 指定時のみ実行。
-/// - `run_mutation`: true のとき Rust 候補に対して `cargo mutants` を実行する（デフォルト off）。
-/// - `run_llm_review`: true のとき LLM セマンティックレビューを実行する（デフォルト off）。
+/// compile が通らなかった場合、後続ステージはすべて `Skipped`。
 pub fn evaluate_candidate(
     candidate: &Candidate,
     timeout: Duration,
     rubric: &Rubric,
-    tests_dir: Option<&Path>,
-    prop_tests_dir: Option<&Path>,
-    wasm_opts: &WasmOptions,
-    run_mutation: bool,
-    run_llm_review: bool,
+    opts: &EvalOptions,
 ) -> Result<Evaluation> {
     let dir = tempfile::tempdir().context("一時ディレクトリの生成に失敗")?;
     let root = dir.path();
@@ -244,19 +246,23 @@ pub fn evaluate_candidate(
             root,
             candidate,
             timeout,
-            tests_dir,
-            prop_tests_dir,
-            wasm_opts,
-            run_mutation,
+            opts.tests_dir,
+            opts.prop_tests_dir,
+            &opts.wasm_opts,
+            opts.run_mutation,
         )?,
-        Language::Python => run_python_stages(root, candidate, timeout, tests_dir, run_mutation)?,
-        Language::Go => run_go_stages(root, candidate, timeout, tests_dir, run_mutation)?,
-        Language::JavaScript => run_js_stages(root, candidate, timeout, tests_dir)?,
-        Language::TypeScript => run_ts_stages(root, candidate, timeout, tests_dir)?,
+        Language::Python => {
+            run_python_stages(root, candidate, timeout, opts.tests_dir, opts.run_mutation)?
+        }
+        Language::Go => {
+            run_go_stages(root, candidate, timeout, opts.tests_dir, opts.run_mutation)?
+        }
+        Language::JavaScript => run_js_stages(root, candidate, timeout, opts.tests_dir)?,
+        Language::TypeScript => run_ts_stages(root, candidate, timeout, opts.tests_dir)?,
     };
 
     // LLM セマンティックレビュー（オプション）
-    let (reasoning_score, reasoning_comment) = if run_llm_review {
+    let (reasoning_score, reasoning_comment) = if opts.run_llm_review {
         let test_passed = results.test.is_passed();
         match crate::llm::review(&candidate.source, test_passed) {
             Some(r) => (Some(r.score), Some(r.comment)),

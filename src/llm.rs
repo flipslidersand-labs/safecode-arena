@@ -3,7 +3,7 @@
 //! バックエンドは環境変数 `SAFECODE_LLM_BACKEND` で切り替える:
 //! - `claude` (既定): Anthropic API。`ANTHROPIC_API_KEY` 必須。
 //! - `ollama`: ローカル Ollama。`OLLAMA_HOST` (既定 localhost:11434)、
-//!             `OLLAMA_MODEL` (既定 qwen2.5-coder:7b)。
+//!   `OLLAMA_MODEL` (既定 qwen2.5-coder:7b)。
 //!
 //! LLM が利用不能 / タイムアウト / JSON パース失敗の場合は `None` を返す（採点に影響しない）。
 
