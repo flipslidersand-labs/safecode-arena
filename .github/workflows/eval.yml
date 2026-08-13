@@ -16,6 +16,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install system dependencies (self-hosted runner)
+        if: runner.environment == 'self-hosted'
+        run: |
+          if ! dpkg -l build-essential &>/dev/null 2>&1 || ! command -v cc &>/dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends build-essential
+          fi
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
