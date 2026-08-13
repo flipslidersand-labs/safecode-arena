@@ -196,11 +196,10 @@ struct StageResults {
     reasoning_comment: Option<String>,
 }
 
-impl StageResults {
-    /// compile 失敗時の既定（後続ステージはすべて Skipped）。
-    fn skipped_after_compile(compile: StageOutcome) -> Self {
+impl Default for StageResults {
+    fn default() -> Self {
         StageResults {
-            compile,
+            compile: StageOutcome::Skipped,
             test: StageOutcome::Skipped,
             lint: StageOutcome::Skipped,
             lint_warnings: 0,
@@ -215,6 +214,13 @@ impl StageResults {
             reasoning_score: None,
             reasoning_comment: None,
         }
+    }
+}
+
+impl StageResults {
+    /// compile 失敗時の既定（後続ステージはすべて Skipped）。
+    fn skipped_after_compile(compile: StageOutcome) -> Self {
+        StageResults { compile, ..Default::default() }
     }
 }
 
@@ -412,8 +418,7 @@ fn run_rust_stages(
         mutation_total,
         audit_findings,
         bench_ns,
-        reasoning_score: None,
-        reasoning_comment: None,
+        ..Default::default()
     })
 }
 
@@ -535,16 +540,10 @@ fn run_python_stages(
         test,
         lint,
         lint_warnings,
-        prop_test: StageOutcome::Skipped,
-        wasm: StageOutcome::Skipped,
-        wasm_fuel_used: None,
         mutation,
         mutation_caught,
         mutation_total,
-        audit_findings: 0,
-        bench_ns: None,
-        reasoning_score: None,
-        reasoning_comment: None,
+        ..Default::default()
     })
 }
 
@@ -667,16 +666,10 @@ fn run_go_stages(
         test,
         lint,
         lint_warnings,
-        prop_test: StageOutcome::Skipped,
-        wasm: StageOutcome::Skipped,
-        wasm_fuel_used: None,
         mutation,
         mutation_caught,
         mutation_total,
-        audit_findings: 0,
-        bench_ns: None,
-        reasoning_score: None,
-        reasoning_comment: None,
+        ..Default::default()
     })
 }
 
@@ -775,22 +768,7 @@ fn run_js_stages(
         (StageOutcome::Skipped, 0)
     };
 
-    Ok(StageResults {
-        compile,
-        test,
-        lint,
-        lint_warnings,
-        prop_test: StageOutcome::Skipped,
-        wasm: StageOutcome::Skipped,
-        wasm_fuel_used: None,
-        mutation: StageOutcome::Skipped,
-        mutation_caught: 0,
-        mutation_total: 0,
-        audit_findings: 0,
-        bench_ns: None,
-        reasoning_score: None,
-        reasoning_comment: None,
-    })
+    Ok(StageResults { compile, test, lint, lint_warnings, ..Default::default() })
 }
 
 /// `tsc` が PATH に存在するか確認する。
@@ -822,22 +800,7 @@ fn run_ts_stages(
     }
 
     if !tsc_available() {
-        return Ok(StageResults {
-            compile: StageOutcome::Skipped,
-            test: StageOutcome::Skipped,
-            lint: StageOutcome::Skipped,
-            lint_warnings: 0,
-            prop_test: StageOutcome::Skipped,
-            wasm: StageOutcome::Skipped,
-            wasm_fuel_used: None,
-            mutation: StageOutcome::Skipped,
-            mutation_caught: 0,
-            mutation_total: 0,
-            audit_findings: 0,
-            bench_ns: None,
-            reasoning_score: None,
-            reasoning_comment: None,
-        });
+        return Ok(StageResults::default());
     }
 
     // compile: 型検査のみ（JS 出力なし）
@@ -876,22 +839,7 @@ fn run_ts_stages(
         (StageOutcome::Skipped, 0)
     };
 
-    Ok(StageResults {
-        compile,
-        test,
-        lint,
-        lint_warnings,
-        prop_test: StageOutcome::Skipped,
-        wasm: StageOutcome::Skipped,
-        wasm_fuel_used: None,
-        mutation: StageOutcome::Skipped,
-        mutation_caught: 0,
-        mutation_total: 0,
-        audit_findings: 0,
-        bench_ns: None,
-        reasoning_score: None,
-        reasoning_comment: None,
-    })
+    Ok(StageResults { compile, test, lint, lint_warnings, ..Default::default() })
 }
 
 /// `cargo audit --json` で Rust 候補の脆弱性をスキャンし、検出件数を返す。

@@ -211,18 +211,7 @@ fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
     }
     let ranked = scoring::rank(evals);
 
-    let rendered = match args.format {
-        Format::Markdown => report::render(&ranked),
-        Format::Json => serde_json::to_string_pretty(&ranked)?,
-        Format::Html => report::render_html(&ranked),
-    };
-    match args.out.as_deref() {
-        Some(path) => {
-            std::fs::write(path, &rendered)?;
-            eprintln!("レポートを書き出しました: {path}");
-        }
-        None => print!("{rendered}"),
-    }
+    render_and_write(&ranked, args.format, args.out.as_deref())?;
 
     // 永続化 + リグレッション検出（出力後に実行して PR コメント用 report が確実に書かれるようにする）
     if let Some(db_path) = args.db.as_deref() {
@@ -269,6 +258,22 @@ fn persist_and_report_regressions(
     let run_id = s.save_run(&created_at, ranked)?;
     eprintln!("run #{run_id} を保存しました: {db_path}");
     Ok(has_regression)
+}
+
+fn render_and_write(ranked: &[Evaluation], format: Format, out: Option<&str>) -> anyhow::Result<()> {
+    let rendered = match format {
+        Format::Markdown => report::render(ranked),
+        Format::Json => serde_json::to_string_pretty(ranked)?,
+        Format::Html => report::render_html(ranked),
+    };
+    match out {
+        Some(path) => {
+            std::fs::write(path, &rendered)?;
+            eprintln!("レポートを書き出しました: {path}");
+        }
+        None => print!("{rendered}"),
+    }
+    Ok(())
 }
 
 fn run_generate(
@@ -326,19 +331,7 @@ fn run_generate(
     }
     let ranked = scoring::rank(evals);
 
-    let rendered = match format {
-        Format::Markdown => report::render(&ranked),
-        Format::Json => serde_json::to_string_pretty(&ranked)?,
-        Format::Html => report::render_html(&ranked),
-    };
-    match out.as_deref() {
-        Some(path) => {
-            std::fs::write(path, &rendered)?;
-            eprintln!("レポートを書き出しました: {path}");
-        }
-        None => print!("{rendered}"),
-    }
-    Ok(())
+    render_and_write(&ranked, format, out.as_deref())
 }
 
 fn run_history(db_path: &str) -> anyhow::Result<()> {
