@@ -91,9 +91,10 @@ fn call_claude(prompt: &str, api_key: &str) -> Option<LlmReview> {
 // ── Ollama backend ────────────────────────────────────────────────────────────
 
 fn call_ollama(prompt: &str) -> Option<LlmReview> {
-    let host = std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "localhost:11434".to_string());
+    let host =
+        std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://localhost:11434".to_string());
     let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "qwen2.5-coder:7b".to_string());
-    let url = format!("http://{host}/api/generate");
+    let url = format!("{host}/api/generate");
     let body = serde_json::json!({
         "model": model,
         "prompt": prompt,

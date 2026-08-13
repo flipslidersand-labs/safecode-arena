@@ -202,6 +202,9 @@ fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
     }
 
     scoring::assign_performance(&mut evals, &rubric);
+    for e in &mut evals {
+        scoring::assign_reasoning(e, e.reasoning_score, &rubric);
+    }
     let ranked = scoring::rank(evals);
 
     let rendered = match args.format {
@@ -312,6 +315,9 @@ fn run_generate(
     }
 
     scoring::assign_performance(&mut evals, &rubric);
+    for e in &mut evals {
+        scoring::assign_reasoning(e, e.reasoning_score, &rubric);
+    }
     let ranked = scoring::rank(evals);
 
     let rendered = match format {
