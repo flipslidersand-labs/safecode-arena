@@ -13,7 +13,7 @@ pub mod analysis;
 pub mod config;
 pub mod generator;
 pub mod llm;
-pub mod llm_client;
+pub(crate) mod llm_client;
 pub mod model;
 pub mod pipeline;
 pub mod report;

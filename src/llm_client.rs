@@ -9,7 +9,7 @@ use std::time::Duration;
 
 /// `SAFECODE_LLM_BACKEND` 環境変数が示すバックエンド名（小文字）を返す。
 /// 未設定の場合は `"claude"` を返す。
-pub fn backend() -> String {
+pub(crate) fn backend() -> String {
     std::env::var("SAFECODE_LLM_BACKEND")
         .unwrap_or_else(|_| "claude".to_string())
         .to_lowercase()
@@ -19,7 +19,7 @@ pub fn backend() -> String {
 ///
 /// - `max_tokens`: 応答の最大トークン数。レビューは 256、候補生成は 4096 が目安。
 /// - `ANTHROPIC_API_KEY` が未設定の場合 `None` を返す。
-pub fn post_claude(prompt: &str, max_tokens: u32, timeout: Duration) -> Option<String> {
+pub(crate) fn post_claude(prompt: &str, max_tokens: u32, timeout: Duration) -> Option<String> {
     let api_key = std::env::var("ANTHROPIC_API_KEY").ok()?;
     let model = std::env::var("ANTHROPIC_MODEL")
         .unwrap_or_else(|_| "claude-haiku-4-5-20251001".to_string());
@@ -43,9 +43,10 @@ pub fn post_claude(prompt: &str, max_tokens: u32, timeout: Duration) -> Option<S
 ///
 /// - `format_json`: `true` のとき `"format": "json"` を付与する（レビュー用）。
 ///   候補生成では自然言語レスポンスが必要なため `false` にする。
-pub fn post_ollama(prompt: &str, format_json: bool, timeout: Duration) -> Option<String> {
+pub(crate) fn post_ollama(prompt: &str, format_json: bool, timeout: Duration) -> Option<String> {
     let host = std::env::var("OLLAMA_HOST")
         .unwrap_or_else(|_| "http://localhost:11434".to_string());
+    let host = host.trim_end_matches('/');
     let model = std::env::var("OLLAMA_MODEL")
         .unwrap_or_else(|_| "qwen2.5-coder:7b".to_string());
     let mut body = serde_json::json!({
