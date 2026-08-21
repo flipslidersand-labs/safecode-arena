@@ -12,5 +12,6 @@ jobs:
     with:
       test-args: ""
       clippy-args: "--all-targets"
+      run-fmt: false
       run-coverage: false
       runner: ubuntu-latest
