@@ -1,0 +1,15 @@
+name: Quality
+
+on:
+  push:
+    branches: [master, "feat/**", "fix/**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  quality:
+    uses: flipslidersand-labs/qa-workflows/.github/workflows/rust-test.yml@main
+    with:
+      test-args: ""
+      clippy-args: "--all-targets"
+      run-coverage: false
