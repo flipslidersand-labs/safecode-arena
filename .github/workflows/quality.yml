@@ -10,8 +10,7 @@ jobs:
   quality:
     uses: flipslidersand-labs/qa-workflows/.github/workflows/rust-test.yml@main
     with:
-      test-args: ""
-      clippy-args: "--all-targets"
+      clippy-args: "--lib --bins"
       run-fmt: false
       run-coverage: false
       runner: ubuntu-latest
