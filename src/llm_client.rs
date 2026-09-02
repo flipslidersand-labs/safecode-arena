@@ -74,11 +74,10 @@ pub(crate) fn post_ollama_text(prompt: &str, timeout: Duration) -> Option<String
 
 #[allow(clippy::result_large_err)]
 fn post_ollama_inner(prompt: &str, format_json: bool, timeout: Duration) -> Option<String> {
-    let host = std::env::var("OLLAMA_HOST")
-        .unwrap_or_else(|_| "http://localhost:11434".to_string());
+    let host =
+        std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://localhost:11434".to_string());
     let host = host.trim_end_matches('/');
-    let model = std::env::var("OLLAMA_MODEL")
-        .unwrap_or_else(|_| "qwen2.5-coder:7b".to_string());
+    let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "qwen2.5-coder:7b".to_string());
     let mut body = serde_json::json!({
         "model": model,
         "prompt": prompt,

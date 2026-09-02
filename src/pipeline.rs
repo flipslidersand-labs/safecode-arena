@@ -220,7 +220,10 @@ impl Default for StageResults {
 impl StageResults {
     /// compile 失敗時の既定（後続ステージはすべて Skipped）。
     fn skipped_after_compile(compile: StageOutcome) -> Self {
-        StageResults { compile, ..Default::default() }
+        StageResults {
+            compile,
+            ..Default::default()
+        }
     }
 }
 
@@ -768,7 +771,13 @@ fn run_js_stages(
         (StageOutcome::Skipped, 0)
     };
 
-    Ok(StageResults { compile, test, lint, lint_warnings, ..Default::default() })
+    Ok(StageResults {
+        compile,
+        test,
+        lint,
+        lint_warnings,
+        ..Default::default()
+    })
 }
 
 /// `tsc` が PATH に存在するか確認する。
@@ -815,7 +824,12 @@ fn run_ts_stages(
     // candidate.js は渡さない（node --test はテストファイルとして実行するため副作用が起きる）
     let test_files_exist = tests_dir.is_some()
         && tests_dir
-            .map(|d| d.read_dir().ok().map(|mut e| e.next().is_some()).unwrap_or(false))
+            .map(|d| {
+                d.read_dir()
+                    .ok()
+                    .map(|mut e| e.next().is_some())
+                    .unwrap_or(false)
+            })
             .unwrap_or(false);
     let test = if test_files_exist {
         let mut t = Command::new("sh");
@@ -839,7 +853,13 @@ fn run_ts_stages(
         (StageOutcome::Skipped, 0)
     };
 
-    Ok(StageResults { compile, test, lint, lint_warnings, ..Default::default() })
+    Ok(StageResults {
+        compile,
+        test,
+        lint,
+        lint_warnings,
+        ..Default::default()
+    })
 }
 
 /// `cargo audit --json` で Rust 候補の脆弱性をスキャンし、検出件数を返す。

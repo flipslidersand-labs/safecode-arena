@@ -155,7 +155,15 @@ fn main() -> anyhow::Result<()> {
             out,
             format,
             config,
-        } => run_generate(spec, candidates, timeout_secs, llm_timeout_secs, out, format, config),
+        } => run_generate(
+            spec,
+            candidates,
+            timeout_secs,
+            llm_timeout_secs,
+            out,
+            format,
+            config,
+        ),
         Command::History { db } => run_history(&db),
     }
 }
@@ -260,7 +268,11 @@ fn persist_and_report_regressions(
     Ok(has_regression)
 }
 
-fn render_and_write(ranked: &[Evaluation], format: Format, out: Option<&str>) -> anyhow::Result<()> {
+fn render_and_write(
+    ranked: &[Evaluation],
+    format: Format,
+    out: Option<&str>,
+) -> anyhow::Result<()> {
     let rendered = match format {
         Format::Markdown => report::render(ranked),
         Format::Json => serde_json::to_string_pretty(ranked)?,
