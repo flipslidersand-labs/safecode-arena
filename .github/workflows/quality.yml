@@ -12,6 +12,6 @@ jobs:
     with:
       # examples/ に main なしのため --lib --tests のみ対象
       test-args: "--lib --tests"
-      clippy-args: "--all-targets"
+      clippy-args: "--lib --tests --bins"
       run-coverage: false
       runner: ubuntu-latest
