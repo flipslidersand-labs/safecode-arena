@@ -9,4 +9,8 @@ jobs:
   quality:
     uses: flipslidersand-labs/qa-workflows/.github/workflows/rust-test.yml@main
     with:
+      # examples/ に main なしのため --lib --tests のみ対象
+      test-args: "--lib --tests"
+      clippy-args: "--all-targets"
       run-coverage: false
+      runner: ubuntu-latest
