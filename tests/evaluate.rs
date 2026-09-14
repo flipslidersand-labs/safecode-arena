@@ -136,7 +136,8 @@ fn db_persists_runs_and_detects_regression() {
         .arg(&subject)
         .args(["--db", db.to_str().unwrap()])
         .assert()
-        .success()
+        .failure()
+        .code(1)
         .stderr(predicate::str::contains("リグレッション検出"))
         .stderr(predicate::str::contains("subject"));
 
