@@ -376,7 +376,8 @@ fn run_rust_stages(
     let test = runner::run_stage("test", t, timeout);
 
     let mut c = Command::new("cargo");
-    c.args(["clippy", "--", "-W", "clippy::all"])
+    // CARGO_TERM_COLOR=always(CI 既定)だと警告行に ANSI が付き件数を数えられないため色を切る。
+    c.args(["clippy", "--color", "never", "--", "-W", "clippy::all"])
         .current_dir(root);
     let (lint, lint_stderr) = runner::run_stage_capture("clippy", c, timeout);
     let lint_warnings = count_lint_warnings(&lint_stderr);
