@@ -1154,3 +1154,55 @@ mod load_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod entry_tests {
+    use super::*;
+
+    #[test]
+    fn is_valid_entry_table() {
+        let cases: &[(&str, bool)] = &[
+            // 正常系
+            ("run", true),
+            ("_x", true),
+            ("f1", true),
+            ("_", true),
+            // 拒否系（コード注入・不正識別子）
+            ("", false),
+            ("1a", false),
+            ("a b", false),
+            ("a;b", false),
+            ("a::b", false),
+            ("a()", false),
+            ("a();evil", false),
+            ("a\nb", false),
+            ("a\n", false),
+            ("a-b", false),
+            // 非 ASCII: 現状仕様を固定（is_alphabetic/is_alphanumeric のため許可される）
+            ("日本語", true),
+            ("関数1", true),
+            ("1関数", false),
+        ];
+        for (name, expected) in cases {
+            assert_eq!(is_valid_entry(name), *expected, "name={name:?}");
+        }
+    }
+
+    #[test]
+    fn run_wasm_stage_rejects_invalid_entry_without_side_effects() {
+        let d = tempfile::tempdir().unwrap();
+        let opts = WasmOptions::default();
+        for bad in ["", "a();evil", "a::b", "a\nb"] {
+            let (outcome, fuel) = run_wasm_stage(d.path(), bad, Duration::from_secs(1), &opts);
+            match outcome {
+                StageOutcome::Failed { detail } => {
+                    assert!(detail.contains("不正なエントリ名"), "{detail}")
+                }
+                other => panic!("Failed を期待: {other:?}"),
+            }
+            assert_eq!(fuel, None);
+        }
+        // ハーネス書込にも cargo 実行にも到達していない（src/main.rs 未生成）
+        assert!(!d.path().join("src").exists());
+    }
+}
