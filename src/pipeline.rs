@@ -9,6 +9,7 @@ use crate::config::Rubric;
 use crate::model::{Candidate, Evaluation, Language, StageOutcome};
 use crate::{runner, scoring, wasm};
 use anyhow::{Context, Result};
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -77,6 +78,7 @@ proptest = "1"
 
 /// 候補ファイルを読み込んで `Candidate` を生成する。
 /// `id` はファイル名 stem（拡張子なし）。
+/// 拡張子なしは Rust、未対応の拡張子はエラー。
 pub fn load_candidate(path: &Path) -> Result<Candidate> {
     let source = fs::read_to_string(path)
         .with_context(|| format!("候補ファイルの読込に失敗: {}", path.display()))?;
@@ -85,16 +87,45 @@ pub fn load_candidate(path: &Path) -> Result<Candidate> {
         .and_then(|s| s.to_str())
         .unwrap_or("candidate")
         .to_string();
-    let language = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(Language::from_extension)
-        .unwrap_or(Language::Rust);
+    let language = match path.extension().and_then(|e| e.to_str()) {
+        None => Language::Rust,
+        Some(ext) => Language::try_from_extension(ext).ok_or_else(|| {
+            anyhow::anyhow!(
+                "未対応の拡張子 `.{ext}`: {}（対応: {}）",
+                path.display(),
+                Language::SUPPORTED_EXTENSIONS
+                    .iter()
+                    .map(|e| format!(".{e}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })?,
+    };
     Ok(Candidate {
         id,
         source,
         language,
     })
+}
+
+/// 複数の候補ファイルを読み込む。候補 ID（ファイル名 stem）が重複したらエラー。
+pub fn load_candidates<P: AsRef<Path>>(paths: &[P]) -> Result<Vec<Candidate>> {
+    let mut seen: HashMap<String, &Path> = HashMap::new();
+    let mut out = Vec::with_capacity(paths.len());
+    for p in paths {
+        let p = p.as_ref();
+        let c = load_candidate(p)?;
+        if let Some(prev) = seen.insert(c.id.clone(), p) {
+            anyhow::bail!(
+                "候補 ID `{}` が重複: {} と {}（ファイル名 stem を変えてください）",
+                c.id,
+                prev.display(),
+                p.display()
+            );
+        }
+        out.push(c);
+    }
+    Ok(out)
 }
 
 /// テストディレクトリ内の指定拡張子ファイルを `dest` へコピーする。
@@ -1050,5 +1081,76 @@ mod mutation_tests {
     fn parse_mutmut_json_no_json_returns_none() {
         assert_eq!(parse_mutmut_json(""), None);
         assert_eq!(parse_mutmut_json("just plain text\n"), None);
+    }
+}
+
+#[cfg(test)]
+mod load_tests {
+    use super::*;
+
+    fn write(dir: &Path, rel: &str, body: &str) -> std::path::PathBuf {
+        let p = dir.join(rel);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(&p, body).unwrap();
+        p
+    }
+
+    #[test]
+    fn unknown_extension_is_error_listing_supported() {
+        let d = tempfile::tempdir().unwrap();
+        let p = write(d.path(), "foo.java", "class A {}");
+        let err = load_candidate(&p).unwrap_err().to_string();
+        assert!(err.contains(".java"), "{err}");
+        for ext in ["rs", "py", "go", "js", "ts"] {
+            assert!(err.contains(ext), "{err}");
+        }
+        assert!(load_candidate(&write(d.path(), "foo.txt", "x")).is_err());
+    }
+
+    #[test]
+    fn no_extension_defaults_to_rust() {
+        let d = tempfile::tempdir().unwrap();
+        let p = write(d.path(), "foo", "pub fn f() {}");
+        assert_eq!(load_candidate(&p).unwrap().language, Language::Rust);
+    }
+
+    #[test]
+    fn known_extensions_unchanged() {
+        let d = tempfile::tempdir().unwrap();
+        for (f, l) in [
+            ("a.rs", Language::Rust),
+            ("a.py", Language::Python),
+            ("a.go", Language::Go),
+            ("a.js", Language::JavaScript),
+            ("A.TS", Language::TypeScript),
+        ] {
+            let c = load_candidate(&write(d.path(), f, "x")).unwrap();
+            assert_eq!(c.language, l);
+        }
+    }
+
+    #[test]
+    fn duplicate_candidate_id_is_error_with_paths() {
+        let d = tempfile::tempdir().unwrap();
+        let a = write(d.path(), "a/foo.rs", "pub fn f() {}");
+        let b = write(d.path(), "b/foo.rs", "pub fn g() {}");
+        let err = load_candidates(&[a.clone(), b.clone()])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("foo"), "{err}");
+        assert!(err.contains(&a.display().to_string()), "{err}");
+        assert!(err.contains(&b.display().to_string()), "{err}");
+    }
+
+    #[test]
+    fn distinct_ids_load_in_order() {
+        let d = tempfile::tempdir().unwrap();
+        let a = write(d.path(), "a.rs", "pub fn f() {}");
+        let b = write(d.path(), "b.py", "x = 1");
+        let cs = load_candidates(&[a, b]).unwrap();
+        assert_eq!(
+            cs.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            ["a", "b"]
+        );
     }
 }
