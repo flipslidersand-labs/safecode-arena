@@ -286,4 +286,121 @@ resource_usage = 5
             assert_eq!(c.rubric_for(l).correctness, 70.0, "{l}");
         }
     }
+
+    fn load_str_err(toml: &str) -> anyhow::Error {
+        let mut f = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
+        write!(f, "{toml}").unwrap();
+        Config::load(Some(f.path().to_str().unwrap())).unwrap_err()
+    }
+
+    #[test]
+    fn partial_weights_fall_back_to_rubric_default() {
+        let r = load_str(
+            "[weights]
+correctness = 70
+",
+        )
+        .default;
+        let d = Rubric::default();
+        assert_eq!(r.correctness, 70.0);
+        assert_eq!(r.security, d.security);
+        assert_eq!(r.performance, d.performance);
+        assert_eq!(r.maintainability, d.maintainability);
+        assert_eq!(r.resource_usage, d.resource_usage);
+        assert_eq!(r.reasoning, 0.0);
+    }
+
+    #[test]
+    fn reasoning_key_is_loaded_and_defaults_to_zero() {
+        let c = load_str(
+            "[weights]
+reasoning = 12
+
+[weights.go]
+reasoning = 3
+",
+        );
+        assert_eq!(c.default.reasoning, 12.0);
+        assert_eq!(c.rubric_for("go").reasoning, 3.0);
+        // 言語別で省略した reasoning は [weights] を継承する
+        assert_eq!(c.rubric_for("rust").reasoning, 12.0);
+        let c = load_str(
+            "[weights.go]
+correctness = 1
+",
+        );
+        assert_eq!(c.rubric_for("go").reasoning, 0.0);
+    }
+
+    #[test]
+    fn invalid_toml_syntax_errors_with_parse_message() {
+        let e = load_str_err(
+            "[weights
+correctness = ",
+        );
+        assert!(e.to_string().contains("設定ファイルの解析に失敗"), "{e}");
+    }
+
+    #[test]
+    fn wrong_value_type_errors_with_parse_message() {
+        let e = load_str_err(
+            "[weights]
+correctness = \"high\"
+",
+        );
+        assert!(e.to_string().contains("設定ファイルの解析に失敗"), "{e}");
+        let e = load_str_err("[weights.go]\nsecurity = \"x\"\n");
+        assert!(e.to_string().contains("設定ファイルの解析に失敗"), "{e}");
+    }
+
+    // Issue #131 (4): 言語別テーブルは部分指定を許す（PartialRubric）。
+    // 必須キー欠落でも解析は失敗せず、欠けたキーは [weights] を継承する。
+    #[test]
+    fn lang_table_missing_keys_is_allowed_and_inherits() {
+        let c = load_str("[weights.go]\nsecurity = 5\n");
+        let g = c.rubric_for("go");
+        let d = Rubric::default();
+        assert_eq!(g.security, 5.0);
+        assert_eq!(g.correctness, d.correctness);
+        assert_eq!(g.resource_usage, d.resource_usage);
+    }
+
+    #[test]
+    fn empty_lang_table_equals_default() {
+        let c = load_str("[weights]\ncorrectness = 33\n\n[weights.python]\n");
+        assert!(c.python.is_some());
+        assert_eq!(c.rubric_for("python").correctness, 33.0);
+        assert_eq!(c.rubric_for("python").security, 20.0);
+    }
+
+    #[test]
+    fn python_javascript_rust_rubric_for() {
+        let c = load_str(
+            "[weights.python]\ncorrectness = 1\n[weights.javascript]\ncorrectness = 2\n[weights.rust]\ncorrectness = 3\n",
+        );
+        assert_eq!(c.rubric_for("python").correctness, 1.0);
+        assert_eq!(c.rubric_for("javascript").correctness, 2.0);
+        assert_eq!(c.rubric_for("rust").correctness, 3.0);
+        // 指定のない言語は default
+        assert_eq!(c.rubric_for("go").correctness, 50.0);
+        assert_eq!(c.rubric_for("typescript").correctness, 50.0);
+    }
+
+    #[test]
+    fn empty_file_yields_default() {
+        let c = load_str("");
+        let d = Rubric::default();
+        assert_eq!(c.default.correctness, d.correctness);
+        assert_eq!(c.default.reasoning, 0.0);
+        assert!(c.rust.is_none() && c.python.is_none() && c.go.is_none());
+        assert!(c.javascript.is_none() && c.typescript.is_none());
+    }
+
+    // 現状の挙動を固定: 未知キーは無視される（deny_unknown_fields なし）。
+    #[test]
+    fn unknown_keys_are_silently_ignored() {
+        let c = load_str("[weights]\nsecurty = 99\ncorrectness = 60\n");
+        assert_eq!(c.default.correctness, 60.0);
+        assert_eq!(c.default.security, 20.0);
+    }
 }
