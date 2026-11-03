@@ -326,6 +326,85 @@ mod tests {
     }
 
     #[test]
+    fn threshold_zero_flags_ties_as_regression() {
+        // 現状の挙動を固定: threshold=0 だと同点（差 0）も `>=` により回帰として返る。
+        let mut prev = HashMap::new();
+        prev.insert("a".to_string(), 60.0);
+        let regs = find_regressions(&prev, &[eval("a", 60.0)], 0.0);
+        assert_eq!(regs.len(), 1);
+        assert_eq!(regs[0].delta(), 0.0);
+        // 上昇は threshold=0 でも回帰ではない
+        assert!(find_regressions(&prev, &[eval("a", 60.5)], 0.0).is_empty());
+    }
+
+    #[test]
+    fn find_regressions_handles_empty_inputs() {
+        let mut prev = HashMap::new();
+        prev.insert("a".to_string(), 60.0);
+        assert!(find_regressions(&HashMap::new(), &[eval("a", 0.0)], 1.0).is_empty());
+        assert!(find_regressions(&prev, &[], 1.0).is_empty());
+        assert!(find_regressions(&HashMap::new(), &[], 0.0).is_empty());
+    }
+
+    #[test]
+    fn empty_run_lists_with_no_best_candidate() {
+        let mut s = Store::open_in_memory().unwrap();
+        let run_id = s.save_run("t-empty", &[]).unwrap();
+        assert_eq!(s.latest_run_id().unwrap(), Some(run_id));
+        assert!(s.run_scores(run_id).unwrap().is_empty());
+        assert!(s.run_comparable_scores(run_id).unwrap().is_empty());
+
+        let runs = s.list_runs().unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].id, run_id);
+        assert_eq!(runs[0].created_at, "t-empty");
+        assert_eq!(runs[0].candidate_count, 0);
+        assert_eq!(runs[0].best_candidate, None);
+        assert_eq!(runs[0].best_score, None);
+    }
+
+    #[test]
+    fn multiple_runs_list_newest_first_and_latest_is_max() {
+        let mut s = Store::open_in_memory().unwrap();
+        let r1 = s.save_run("t1", &[eval("a", 10.0)]).unwrap();
+        let r2 = s.save_run("t2", &[]).unwrap();
+        let r3 = s
+            .save_run("t3", &[eval("a", 30.0), eval("b", 20.0)])
+            .unwrap();
+        assert!(r1 < r2 && r2 < r3);
+        assert_eq!(s.latest_run_id().unwrap(), Some(r3));
+
+        let runs = s.list_runs().unwrap();
+        let ids: Vec<i64> = runs.iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec![r3, r2, r1]);
+        assert_eq!(runs[0].candidate_count, 2);
+        assert_eq!(runs[1].candidate_count, 0);
+        assert_eq!(runs[2].candidate_count, 1);
+        // run ごとに独立して集計される
+        assert_eq!(runs[0].best_candidate.as_deref(), Some("a"));
+        assert_eq!(runs[2].best_score, Some(10.0));
+        assert_eq!(s.run_scores(r1).unwrap().get("a"), Some(&10.0));
+    }
+
+    #[test]
+    fn duplicate_candidate_id_in_run_keeps_last_row() {
+        // 現状の挙動を固定: 同一 candidate_id が複数行あると HashMap で後勝ち（挿入順）。
+        let mut s = Store::open_in_memory().unwrap();
+        let run = s
+            .save_run("t", &[eval("a", 10.0), eval("a", 70.0)])
+            .unwrap();
+        assert_eq!(s.run_scores(run).unwrap().get("a"), Some(&70.0));
+        assert_eq!(s.run_comparable_scores(run).unwrap().get("a"), Some(&70.0));
+        assert_eq!(s.list_runs().unwrap()[0].candidate_count, 2);
+    }
+
+    #[test]
+    fn open_directory_path_fails() {
+        let dir = std::env::temp_dir();
+        assert!(Store::open(&dir).is_err());
+    }
+
+    #[test]
     fn rows_without_axes_are_excluded_from_comparison() {
         let s = Store::open_in_memory().unwrap();
         s.conn
