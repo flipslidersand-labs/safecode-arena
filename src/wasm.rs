@@ -122,8 +122,11 @@ fn classify_error(e: &wasmtime::Error, elapsed_ms: u64) -> StageOutcome {
             limit_ms: elapsed_ms,
         };
     }
+    // 先頭行は backtrace 見出しだけになるため、原因（root cause）を detail に使う。
     StageOutcome::Failed {
-        detail: format!("{e:#}")
+        detail: e
+            .root_cause()
+            .to_string()
             .lines()
             .next()
             .unwrap_or_default()
@@ -170,6 +173,7 @@ mod tests {
         format!(
             r#"(module
                 (import "wasi_snapshot_preview1" "proc_exit" (func $exit (param i32)))
+                (memory (export "memory") 1)
                 (func (export "_start") (i32.const {code}) (call $exit)))"#
         )
     }
@@ -181,31 +185,26 @@ mod tests {
         }
     }
 
-    // 注意: 以下3件は現状の挙動の固定。wasmtime 46 では backtrace 付きでラップされた
-    // エラーから I32Exit/Trap の downcast が効かず、proc_exit(0) も Failed になり、
-    // detail は先頭行 "error while executing at wasm backtrace:" だけになる。
-    // classify_error の修正時は期待値を Passed / "exit code 3" 等へ更新すること。
-    const BACKTRACE_HEAD: &str = "error while executing at wasm backtrace:";
-
     #[test]
-    fn proc_exit_zero_current_behavior_is_failed() {
+    fn proc_exit_zero_passes() {
         let r = run_bytes(exit_wat(0).as_bytes(), 100_000, ONE_MB);
-        assert_eq!(failed_detail(&r.outcome), BACKTRACE_HEAD);
+        assert!(r.outcome.is_passed(), "outcome={:?}", r.outcome);
         assert!(r.fuel_used.is_some_and(|u| u <= 100_000));
     }
 
     #[test]
-    fn proc_exit_nonzero_current_behavior_loses_exit_code() {
+    fn proc_exit_nonzero_reports_exit_code() {
         let r = run_bytes(exit_wat(3).as_bytes(), 100_000, ONE_MB);
-        assert_eq!(failed_detail(&r.outcome), BACKTRACE_HEAD);
+        assert_eq!(failed_detail(&r.outcome), "exit code 3");
         assert!(r.fuel_used.is_some_and(|u| u <= 100_000));
     }
 
     #[test]
-    fn unreachable_trap_fails_with_first_line_only() {
+    fn unreachable_trap_keeps_trap_cause() {
         let wat = br#"(module (func (export "_start") unreachable))"#;
         let r = run_bytes(wat, 100_000, ONE_MB);
-        assert_eq!(failed_detail(&r.outcome), BACKTRACE_HEAD);
+        let detail = failed_detail(&r.outcome);
+        assert!(detail.contains("unreachable"), "detail={detail:?}");
         assert!(r.fuel_used.is_some_and(|u| u <= 100_000));
     }
 
