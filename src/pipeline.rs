@@ -645,6 +645,19 @@ fn eslint_available() -> bool {
         .unwrap_or(false)
 }
 
+/// ESLint の出力が「実行失敗」(設定なし・未知オプション・フォーマッタ欠落)を示すか判定する純関数。
+///
+/// `eslint ... 2>&1; true` は終了コードを捨てるため、失敗が「指摘 0 件」に化けるのを防ぐ (#152)。
+fn eslint_run_failed(output: &str) -> bool {
+    const MARKERS: [&str; 4] = [
+        "Oops! Something went wrong",
+        "Invalid option '--",
+        "formatter is no longer part of core ESLint",
+        "couldn't find an eslint.config",
+    ];
+    MARKERS.iter().any(|m| output.contains(m))
+}
+
 /// Go 候補: 一時モジュールで go build → go test → staticcheck（なければ go vet）。
 /// prop_test / wasm は非対応のため Skipped。
 fn run_go_stages(
@@ -798,7 +811,12 @@ fn run_js_stages(
             .arg(r#"eslint --no-eslintrc --rule 'no-undef: error' --rule 'no-unused-vars: warn' --format compact candidate.js 2>&1; true"#)
             .current_dir(root);
         let (outcome, out) = runner::run_stage_capture("eslint", l, timeout);
-        (outcome, count_eslint_findings(&out))
+        if eslint_run_failed(&out) {
+            // 実行失敗を「指摘 0 件」にしない (#152)
+            (StageOutcome::Skipped, 0)
+        } else {
+            (outcome, count_eslint_findings(&out))
+        }
     } else {
         (StageOutcome::Skipped, 0)
     };
@@ -880,7 +898,12 @@ fn run_ts_stages(
             .arg(r#"eslint --no-eslintrc --rule 'no-undef: error' --rule 'no-unused-vars: warn' --format compact candidate.ts 2>&1; true"#)
             .current_dir(root);
         let (outcome, out) = runner::run_stage_capture("eslint", l, timeout);
-        (outcome, count_eslint_findings(&out))
+        if eslint_run_failed(&out) {
+            // 実行失敗を「指摘 0 件」にしない (#152)
+            (StageOutcome::Skipped, 0)
+        } else {
+            (outcome, count_eslint_findings(&out))
+        }
     } else {
         (StageOutcome::Skipped, 0)
     };
@@ -1579,5 +1602,40 @@ mod copy_assemble_tests {
             (e.audit_findings, e.bench_ns, e.wasm_fuel_used),
             (1, Some(42), Some(9))
         );
+    }
+}
+
+#[cfg(test)]
+mod eslint_run_failed_tests {
+    use super::eslint_run_failed;
+
+    #[test]
+    fn detects_invalid_option() {
+        assert!(eslint_run_failed(
+            "Invalid option '--eslintrc' - perhaps you meant '--ext'?"
+        ));
+    }
+
+    #[test]
+    fn detects_missing_config_oops() {
+        assert!(eslint_run_failed(
+            "\nOops! Something went wrong! :(\n\nESLint: 10.2.0\n\nESLint couldn't find an eslint.config.(js|mjs|cjs) file."
+        ));
+    }
+
+    #[test]
+    fn detects_missing_compact_formatter() {
+        assert!(eslint_run_failed(
+            "The compact formatter is no longer part of core ESLint. Install it manually with `npm install -D eslint-formatter-compact`"
+        ));
+    }
+
+    #[test]
+    fn normal_outputs_are_not_failures() {
+        assert!(!eslint_run_failed(""));
+        assert!(!eslint_run_failed("candidate.js: line 1, col 7, Warning - 'a' is assigned a value but never used. (no-unused-vars)\n\n1 problem"));
+        assert!(!eslint_run_failed(
+            "\u{2716} 2 problems (1 error, 1 warning)"
+        ));
     }
 }
