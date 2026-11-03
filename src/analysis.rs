@@ -236,4 +236,143 @@ mod tests {
     fn count_eslint_zero_on_clean() {
         assert_eq!(count_eslint_findings(""), 0);
     }
+
+    fn metrics(loc: usize, fn_count: usize, max_line_len: usize) -> SourceMetrics {
+        SourceMetrics {
+            unsafe_count: 0,
+            loc,
+            fn_count,
+            max_line_len,
+        }
+    }
+
+    fn approx(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-9
+    }
+
+    #[test]
+    fn go_vet_counts_diagnostic_lines_only() {
+        let out = "# candidate\n./candidate.go:5:2: unreachable code\n\n  \n./candidate.go:9:1: result of fmt.Sprintf call not used\n";
+        assert_eq!(count_go_vet_findings(out), 2);
+    }
+
+    #[test]
+    fn go_vet_ignores_header_blank_and_non_go_lines() {
+        assert_eq!(count_go_vet_findings(""), 0);
+        assert_eq!(count_go_vet_findings("# candidate\n"), 0);
+        assert_eq!(
+            count_go_vet_findings("vet: some failure\nexit status 1\n"),
+            0
+        );
+        // `#` で始まる行は `.go:` を含んでいても除外される。
+        assert_eq!(count_go_vet_findings("# candidate.go:1:1: x\n"), 0);
+        // 前後の空白は trim されて数えられる。
+        assert_eq!(count_go_vet_findings("  ./a.go:1:1: msg\n"), 1);
+    }
+
+    #[test]
+    fn has_bench_detects_each_pattern() {
+        assert!(has_bench("use criterion::Criterion;\n"));
+        assert!(has_bench("extern crate criterion;\n"));
+        assert!(has_bench("#[bench]\nfn b() {}\n"));
+        assert!(!has_bench("fn main() {}\n"));
+        assert!(!has_bench(""));
+        // `use criterion` の部分一致のみで判定される（`criterion` 単独では不十分）。
+        assert!(!has_bench("// criterion benchmark later\n"));
+    }
+
+    #[test]
+    fn maintainability_avg_fn_len_boundary_at_30() {
+        assert!(approx(metrics(30, 1, 0).maintainability_ratio(), 1.0));
+        assert!(approx(metrics(31, 1, 0).maintainability_ratio(), 0.99));
+        // 平均 = 60/2 = 30 → 減点なし。
+        assert!(approx(metrics(60, 2, 0).maintainability_ratio(), 1.0));
+    }
+
+    #[test]
+    fn maintainability_clamps_to_zero_at_130_lines() {
+        // 実装上は 130 行で 0（doc コメントの「100 行で 0」とは異なる）。
+        assert!(approx(metrics(100, 1, 0).maintainability_ratio(), 0.3));
+        assert!(approx(metrics(130, 1, 0).maintainability_ratio(), 0.0));
+        assert_eq!(metrics(10_000, 1, 200).maintainability_ratio(), 0.0);
+    }
+
+    #[test]
+    fn maintainability_long_line_boundary_at_120() {
+        assert!(approx(metrics(1, 1, 120).maintainability_ratio(), 1.0));
+        assert!(approx(metrics(1, 1, 121).maintainability_ratio(), 0.9));
+    }
+
+    #[test]
+    fn maintainability_fn_count_zero_treated_as_one() {
+        assert!(approx(metrics(30, 0, 0).maintainability_ratio(), 1.0));
+        assert!(approx(metrics(31, 0, 0).maintainability_ratio(), 0.99));
+        // 実ソースでも fn が無ければ loc がそのまま平均になる。
+        let m = SourceMetrics::analyze("let a = 1;\n");
+        assert_eq!(m.fn_count, 0);
+        assert!(approx(m.maintainability_ratio(), 1.0));
+    }
+
+    #[test]
+    fn maintainability_penalties_combine() {
+        assert!(approx(metrics(60, 1, 121).maintainability_ratio(), 0.6));
+    }
+
+    #[test]
+    fn unsafe_counted_in_identifiers_and_comments() {
+        // 現状の挙動: 単純な部分文字列一致なので誤検出する。
+        assert_eq!(
+            SourceMetrics::analyze("let not_unsafe = 1;\n").unsafe_count,
+            1
+        );
+        assert_eq!(
+            SourceMetrics::analyze("// no unsafe here\n").unsafe_count,
+            1
+        );
+        assert_eq!(
+            SourceMetrics::analyze("let s = \"unsafe\";\n").unsafe_count,
+            1
+        );
+        assert_eq!(
+            SourceMetrics::analyze("unsafe { unsafe { } }\n").unsafe_count,
+            2
+        );
+    }
+
+    #[test]
+    fn unsafe_ratio_clamps_at_four() {
+        let m = |n| SourceMetrics {
+            unsafe_count: n,
+            ..metrics(1, 1, 0)
+        };
+        assert!(approx(m(3).security_ratio(), 0.25));
+        assert_eq!(m(4).security_ratio(), 0.0);
+        assert_eq!(m(10).security_ratio(), 0.0);
+    }
+
+    #[test]
+    fn analyze_loc_and_max_line_len() {
+        let m = SourceMetrics::analyze("a\n\n   \nbbb\n");
+        assert_eq!(m.loc, 2);
+        assert_eq!(m.max_line_len, 3);
+        let e = SourceMetrics::analyze("");
+        assert_eq!((e.loc, e.max_line_len, e.fn_count), (0, 0, 0));
+    }
+
+    #[test]
+    fn count_eslint_singular_and_plural_summary() {
+        assert_eq!(count_eslint_findings("1 problem\n"), 1);
+        assert_eq!(count_eslint_findings("3 problems\n"), 3);
+        assert_eq!(count_eslint_findings("  12 problems  \n"), 12);
+    }
+
+    #[test]
+    fn count_eslint_decorated_summary_falls_back_to_line_scan() {
+        // 現状の挙動: `✖ 1 problem (...)` は suffix 一致せず、
+        // `.js:` を含む診断行の数にフォールバックする。
+        let out = "✖ 5 problems (3 errors, 2 warnings)\n";
+        assert_eq!(count_eslint_findings(out), 0);
+        let out = "a.js: line 1, col 1, error - x\nb.js: line 2, col 1, warning - y\n";
+        assert_eq!(count_eslint_findings(out), 2);
+    }
 }
