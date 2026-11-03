@@ -150,7 +150,12 @@ pub fn assign_performance(evals: &mut [Evaluation], rubric: &Rubric) {
         .iter()
         .map(|e| {
             if has_any_bench {
-                e.bench_ns
+                // compile/test が通っていない候補は bench が速くても採点対象外
+                if e.compile.is_passed() && e.test.is_passed() {
+                    e.bench_ns
+                } else {
+                    None
+                }
             } else {
                 match (e.compile.duration_ms(), e.test.duration_ms()) {
                     (Some(c), Some(t)) => Some(c + t),
@@ -556,5 +561,36 @@ mod tests {
         let slow = evals.iter().find(|e| e.candidate_id == "slow").unwrap();
         // bench_ns を使うので fast が高スコア
         assert!(fast.axes.performance > slow.axes.performance);
+    }
+
+    #[test]
+    fn bench_path_ignores_candidates_that_failed_test() {
+        let r = Rubric::default();
+        let mk = |id: &str, bench: u64, test: StageOutcome| Evaluation {
+            candidate_id: id.into(),
+            compile: passed(1),
+            test,
+            lint: StageOutcome::Skipped,
+            lint_warnings: 0,
+            prop_test: StageOutcome::Skipped,
+            wasm: StageOutcome::Skipped,
+            wasm_fuel_used: None,
+            mutation: StageOutcome::Skipped,
+            mutation_caught: 0,
+            mutation_total: 0,
+            audit_findings: 0,
+            bench_ns: Some(bench),
+            reasoning: StageOutcome::Skipped,
+            reasoning_score: 0.0,
+            reasoning_comment: None,
+            axes: AxisScores::default(),
+            score: 0.0,
+        };
+        // broken: テスト失敗だが bench は最速。ok: テスト成功。
+        let mut evals = vec![mk("broken", 10, failed()), mk("ok", 1000, passed(1))];
+        assign_performance(&mut evals, &r);
+        assert_eq!(evals[0].axes.performance, 0.0);
+        // ok が唯一の採点対象なので満点
+        assert_eq!(evals[1].axes.performance, r.performance);
     }
 }
