@@ -1,0 +1,47 @@
+name: ignored-tests
+
+# #108: reusable rust-test.yml は pytest / wasm32-wasip1 を入れられないため、
+# #[ignore] 付きの外部ツール依存テストはこの job で --ignored 指定して実行する。
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ignored-tests:
+    runs-on: ${{ vars.GATE_RUNNER }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies (self-hosted runner)
+        if: runner.environment == 'self-hosted'
+        run: |
+          if ! dpkg -l build-essential &>/dev/null 2>&1 || ! command -v cc &>/dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends build-essential
+          fi
+
+      - name: Install Rust toolchain (wasm32-wasip1)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+
+      - name: Install pytest and ruff
+        run: python3 -m pip install --user pytest ruff && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-ignored-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ignored-
+
+      - name: Run ignored tests
+        run: cargo test --test evaluate -- --ignored
