@@ -204,12 +204,13 @@ fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
         run_llm_review: args.llm_review,
     };
 
-    let mut evals = Vec::with_capacity(args.candidates.len());
-    for path in &args.candidates {
-        let candidate = pipeline::load_candidate(Path::new(path))?;
+    // 評価前に全候補を読み込み、未対応拡張子・ID 重複を先に検出する。
+    let candidates = pipeline::load_candidates(&args.candidates)?;
+    let mut evals = Vec::with_capacity(candidates.len());
+    for candidate in &candidates {
         eprintln!("評価中: {} ...", candidate.id);
         evals.push(pipeline::evaluate_candidate(
-            &candidate, timeout, &rubric, &eval_opts,
+            candidate, timeout, &rubric, &eval_opts,
         )?);
     }
 

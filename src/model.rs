@@ -14,15 +14,24 @@ pub enum Language {
 }
 
 impl Language {
-    /// ファイル拡張子から言語を判定する。未知の拡張子は Rust 既定。
-    pub fn from_extension(ext: &str) -> Language {
+    /// 対応している拡張子（小文字）。
+    pub const SUPPORTED_EXTENSIONS: [&'static str; 5] = ["rs", "py", "go", "js", "ts"];
+
+    /// ファイル拡張子から言語を判定する。未知の拡張子は `None`。
+    pub fn try_from_extension(ext: &str) -> Option<Language> {
         match ext.to_ascii_lowercase().as_str() {
-            "py" => Language::Python,
-            "go" => Language::Go,
-            "js" => Language::JavaScript,
-            "ts" => Language::TypeScript,
-            _ => Language::Rust,
+            "rs" => Some(Language::Rust),
+            "py" => Some(Language::Python),
+            "go" => Some(Language::Go),
+            "js" => Some(Language::JavaScript),
+            "ts" => Some(Language::TypeScript),
+            _ => None,
         }
+    }
+
+    /// 互換用: 未知の拡張子は Rust 既定。新規コードは `try_from_extension` を使うこと。
+    pub fn from_extension(ext: &str) -> Language {
+        Self::try_from_extension(ext).unwrap_or(Language::Rust)
     }
 
     pub fn name(&self) -> &'static str {
