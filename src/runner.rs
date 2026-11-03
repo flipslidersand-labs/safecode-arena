@@ -9,18 +9,29 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 use wait_timeout::ChildExt;
 
-/// stderr を読み取り、先頭 20 行に要約する。
-fn summarize(mut file: std::fs::File) -> String {
+/// キャプチャ先ファイルの全文を読み取る。
+fn read_all(mut file: std::fs::File) -> String {
     let mut buf = String::new();
     let _ = file.seek(SeekFrom::Start(0));
     let _ = file.read_to_string(&mut buf);
-    buf.lines().take(20).collect::<Vec<_>>().join("\n")
+    buf
+}
+
+/// 失敗理由の表示用に先頭 20 行へ要約する。
+fn summarize(file: std::fs::File) -> String {
+    read_all(file)
+        .lines()
+        .take(20)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// プロセスをタイムアウト付きで実行し、ステージ結果と stderr を返す。
 ///
 /// [`run_stage`] と同じ動作だが、呼び出し元が stderr を検査できるよう
 /// 文字列として返す（clippy warning 数のカウント等に使う）。
+/// stdout と stderr は同じ一時ファイルへ書き出し、全文を返す
+/// （`cargo audit --json` / ruff / Criterion は stdout に出力するため）。
 pub fn run_stage_capture(
     label: &str,
     command: std::process::Command,
@@ -48,8 +59,20 @@ pub fn run_stage_capture(
             );
         }
     };
+    let out_for_child = match err_file.try_clone() {
+        Ok(f) => f,
+        Err(e) => {
+            return (
+                StageOutcome::Failed {
+                    detail: format!("{label}: ファイル複製失敗: {e}"),
+                },
+                String::new(),
+            );
+        }
+    };
     let mut cmd = command;
-    cmd.stdout(Stdio::null()).stderr(Stdio::from(err_for_child));
+    cmd.stdout(Stdio::from(out_for_child))
+        .stderr(Stdio::from(err_for_child));
 
     let start = Instant::now();
     let mut child = match cmd.spawn() {
@@ -93,7 +116,7 @@ pub fn run_stage_capture(
         },
     };
 
-    let captured = summarize(err_file);
+    let captured = read_all(err_file);
     (outcome, captured)
 }
 
@@ -123,6 +146,39 @@ mod tests {
     fn quick_success_passes() {
         let outcome = run_stage("true", Command::new("true"), Duration::from_secs(5));
         assert!(outcome.is_passed());
+    }
+
+    #[test]
+    fn capture_returns_stdout_and_stderr_in_full() {
+        let mut cmd = Command::new("sh");
+        cmd.args([
+            "-c",
+            "echo out-line; for i in $(seq 1 30); do echo warn-$i >&2; done",
+        ]);
+        let (outcome, captured) = run_stage_capture("sh", cmd, Duration::from_secs(5));
+        assert!(outcome.is_passed());
+        assert!(captured.contains("out-line"));
+        assert_eq!(captured.matches("warn-").count(), 30);
+    }
+
+    #[test]
+    fn failed_detail_is_summarized_to_20_lines() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "for i in $(seq 1 30); do echo e-$i >&2; done; exit 1"]);
+        let (outcome, captured) = run_stage_capture("sh", cmd, Duration::from_secs(5));
+        let StageOutcome::Failed { detail } = outcome else {
+            panic!("Failed を期待");
+        };
+        assert_eq!(detail.lines().count(), 20);
+        assert_eq!(captured.lines().count(), 30);
+    }
+
+    #[test]
+    fn spawn_failure_is_failed_with_empty_capture() {
+        let (outcome, captured) =
+            run_stage_capture("x", Command::new("/no/such/cmd"), Duration::from_secs(1));
+        assert!(matches!(outcome, StageOutcome::Failed { .. }));
+        assert!(captured.is_empty());
     }
 
     #[test]
