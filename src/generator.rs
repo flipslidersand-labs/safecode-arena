@@ -95,6 +95,11 @@ pub fn parse_candidates(output: &str) -> Vec<String> {
         .collect()
 }
 
+/// 先頭 `n` 件だけ残す（LLM が要求より多く返した場合の切り詰め）。
+fn truncate_candidates(candidates: Vec<String>, n: usize) -> Vec<String> {
+    candidates.into_iter().take(n).collect()
+}
+
 /// spec テキストから N 候補の Rust ソースを生成する。
 ///
 /// `llm_timeout`: LLM 呼び出し 1 回あたりのタイムアウト。
@@ -110,7 +115,7 @@ pub fn generate(spec: &str, n: usize, llm_timeout: std::time::Duration) -> Vec<S
         }
     };
     match raw {
-        Some(text) => parse_candidates(&text).into_iter().take(n).collect(),
+        Some(text) => truncate_candidates(parse_candidates(&text), n),
         None => vec![],
     }
 }
@@ -187,5 +192,107 @@ pub fn add(a: i32, b: i32) -> i32 { b + a }
         let candidates = parse_candidates(output);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0], "pub fn f() {}");
+    }
+
+    fn block(body: &str) -> String {
+        format!("---CANDIDATE---\n```rust\n{body}\n```\n")
+    }
+
+    #[test]
+    fn parse_candidates_drops_unclosed_fence() {
+        // 閉じ ``` が無い候補は破棄される（出力切れ想定）。
+        assert!(parse_candidates("---CANDIDATE---\n```rust\npub fn f() {}\n").is_empty());
+        // 閉じ済み + 未閉じ: 閉じ済みだけ残る。
+        let out = format!(
+            "{}---CANDIDATE---\n```rust\npub fn g() {{",
+            block("pub fn f() {}")
+        );
+        assert_eq!(parse_candidates(&out), vec!["pub fn f() {}".to_string()]);
+    }
+
+    #[test]
+    fn parse_candidates_tag_is_case_sensitive_rust_only() {
+        // 現状の挙動: 小文字 ```rust のみ受理。別タグ・タグ無しは抽出されない。
+        for tag in ["Rust", "RUST", "rs", ""] {
+            let out = format!("---CANDIDATE---\n```{tag}\npub fn f() {{}}\n```\n");
+            assert!(parse_candidates(&out).is_empty(), "tag={tag:?}");
+        }
+    }
+
+    #[test]
+    fn parse_candidates_rust_prefix_tag_leaks_into_code() {
+        // 現状の挙動（要報告）: "```rustc" は "```rust" 前方一致し、残りの "c" がコード先頭に混入する。
+        let out = "---CANDIDATE---\n```rustc\npub fn f() {}\n```\n";
+        assert_eq!(parse_candidates(out), vec!["c\npub fn f() {}".to_string()]);
+    }
+
+    #[test]
+    fn parse_candidates_no_fence_at_all_even_with_separator() {
+        assert!(
+            parse_candidates("---CANDIDATE---\npub fn f() {}\n---CANDIDATE---\nfoo").is_empty()
+        );
+    }
+
+    #[test]
+    fn parse_candidates_only_first_block_per_section() {
+        let out = "---CANDIDATE---\n```rust\nfn a() {}\n```\ntext\n```rust\nfn b() {}\n```\n";
+        assert_eq!(parse_candidates(out), vec!["fn a() {}".to_string()]);
+    }
+
+    #[test]
+    fn parse_candidates_single_block_without_separator() {
+        let out = "```rust\npub fn f() {}\n```";
+        assert_eq!(parse_candidates(out), vec!["pub fn f() {}".to_string()]);
+        // 前置きテキスト付きでも抽出される。
+        let out = "Here you go:\n```rust\npub fn f() {}\n```\nDone.";
+        assert_eq!(parse_candidates(out), vec!["pub fn f() {}".to_string()]);
+    }
+
+    #[test]
+    fn parse_candidates_skips_blank_block_but_keeps_order() {
+        let out = format!(
+            "{}---CANDIDATE---\n```rust\n  \n```\n{}",
+            block("fn a() {}"),
+            block("fn c() {}")
+        );
+        assert_eq!(
+            parse_candidates(&out),
+            vec!["fn a() {}".to_string(), "fn c() {}".to_string()]
+        );
+    }
+
+    #[test]
+    fn build_generate_prompt_replaces_n_and_spec() {
+        let p = build_generate_prompt("sum two ints", 3);
+        assert!(p.contains("exactly 3 distinct"), "{p}");
+        assert!(p.contains("repeat exactly 3 times"), "{p}");
+        assert!(p.contains("## Specification\nsum two ints\n"), "{p}");
+        assert!(!p.contains("{N}") && !p.contains("{SPEC}"), "{p}");
+    }
+
+    #[test]
+    fn build_generate_prompt_does_not_double_replace_placeholders_in_spec() {
+        // N を先に置換し SPEC を後で挿入するため、spec 内の {N} / {SPEC} はそのまま残る。
+        let p = build_generate_prompt("repeat {N} times; {SPEC}", 4);
+        assert!(
+            p.contains("## Specification\nrepeat {N} times; {SPEC}\n"),
+            "{p}"
+        );
+        assert!(p.contains("exactly 4 distinct"), "{p}");
+    }
+
+    #[test]
+    fn build_generate_prompt_handles_empty_spec() {
+        let p = build_generate_prompt("", 1);
+        assert!(p.contains("## Specification\n\n\n## Requirements"), "{p}");
+    }
+
+    #[test]
+    fn truncate_candidates_keeps_first_n() {
+        let v = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(truncate_candidates(v(&["a", "b", "c"]), 2), v(&["a", "b"]));
+        assert_eq!(truncate_candidates(v(&["a"]), 3), v(&["a"]));
+        assert!(truncate_candidates(v(&["a"]), 0).is_empty());
+        assert!(truncate_candidates(vec![], 2).is_empty());
     }
 }
