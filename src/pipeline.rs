@@ -1339,3 +1339,245 @@ mod entry_tests {
         assert!(!d.path().join("src").exists());
     }
 }
+
+#[cfg(test)]
+mod copy_assemble_tests {
+    use super::*;
+
+    fn write(dir: &Path, rel: &str, body: &str) -> std::path::PathBuf {
+        let p = dir.join(rel);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(&p, body).unwrap();
+        p
+    }
+
+    fn cand(source: &str) -> Candidate {
+        Candidate {
+            id: "c1".into(),
+            source: source.into(),
+            language: Language::Rust,
+        }
+    }
+
+    fn passed() -> StageOutcome {
+        StageOutcome::Passed { duration_ms: 7 }
+    }
+
+    // ---- load_candidate / load_candidates ----
+
+    #[test]
+    fn load_candidate_missing_file_is_error_with_path() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("nope.rs");
+        let err = format!("{:#}", load_candidate(&p).unwrap_err());
+        assert!(err.contains("候補ファイルの読込に失敗"), "{err}");
+        assert!(err.contains(&p.display().to_string()), "{err}");
+    }
+
+    #[test]
+    fn load_candidate_directory_is_error() {
+        let d = tempfile::tempdir().unwrap();
+        assert!(load_candidate(d.path()).is_err());
+    }
+
+    #[test]
+    fn load_candidate_id_is_stem_and_source_is_preserved() {
+        let d = tempfile::tempdir().unwrap();
+        let p = write(d.path(), "x.test.py", "print(1)\n");
+        let c = load_candidate(&p).unwrap();
+        assert_eq!(c.id, "x.test");
+        assert_eq!(c.source, "print(1)\n");
+        assert_eq!(c.language, Language::Python);
+    }
+
+    #[test]
+    fn load_candidate_extension_is_case_insensitive() {
+        let d = tempfile::tempdir().unwrap();
+        for (f, l) in [
+            ("a.RS", Language::Rust),
+            ("a.Py", Language::Python),
+            ("a.GO", Language::Go),
+            ("a.JS", Language::JavaScript),
+        ] {
+            assert_eq!(
+                load_candidate(&write(d.path(), f, "x")).unwrap().language,
+                l
+            );
+        }
+    }
+
+    #[test]
+    fn load_candidates_empty_is_ok_and_missing_path_propagates() {
+        let none: [&Path; 0] = [];
+        assert!(load_candidates(&none).unwrap().is_empty());
+        let d = tempfile::tempdir().unwrap();
+        let ok = write(d.path(), "a.rs", "x");
+        let missing = d.path().join("missing.rs");
+        assert!(load_candidates(&[ok, missing]).is_err());
+    }
+
+    // ---- copy_ext ----
+
+    #[test]
+    fn copy_ext_copies_only_matching_extension() {
+        let d = tempfile::tempdir().unwrap();
+        let src = d.path().join("src");
+        write(&src, "a.rs", "A");
+        write(&src, "b.rs", "B");
+        write(&src, "c.txt", "C");
+        write(&src, "noext", "N");
+        write(&src, "D.RS", "D");
+        let dest = d.path().join("dest");
+        copy_ext(&src, &dest, "rs").unwrap();
+        let mut names: Vec<_> = fs::read_dir(&dest)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        // 拡張子比較は大文字小文字を区別する（D.RS はコピーされない）
+        assert_eq!(names, ["a.rs", "b.rs"]);
+        assert_eq!(fs::read_to_string(dest.join("a.rs")).unwrap(), "A");
+        assert_eq!(fs::read_to_string(dest.join("b.rs")).unwrap(), "B");
+    }
+
+    #[test]
+    fn copy_ext_creates_nested_dest_and_handles_no_match() {
+        let d = tempfile::tempdir().unwrap();
+        let src = d.path().join("src");
+        write(&src, "c.txt", "C");
+        let dest = d.path().join("x/y/z");
+        copy_ext(&src, &dest, "rs").unwrap();
+        assert!(dest.is_dir());
+        assert_eq!(fs::read_dir(&dest).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn copy_ext_does_not_recurse_and_overwrites_existing() {
+        let d = tempfile::tempdir().unwrap();
+        let src = d.path().join("src");
+        write(&src, "sub/inner.rs", "I");
+        write(&src, "a.rs", "new");
+        let dest = d.path().join("dest");
+        write(&dest, "a.rs", "old");
+        copy_ext(&src, &dest, "rs").unwrap();
+        assert!(!dest.join("inner.rs").exists());
+        assert!(!dest.join("sub").exists());
+        assert_eq!(fs::read_to_string(dest.join("a.rs")).unwrap(), "new");
+    }
+
+    #[test]
+    fn copy_ext_missing_src_is_error_but_dest_already_created() {
+        let d = tempfile::tempdir().unwrap();
+        let src = d.path().join("absent");
+        let dest = d.path().join("dest");
+        let err = format!("{:#}", copy_ext(&src, &dest, "rs").unwrap_err());
+        assert!(err.contains("テストディレクトリの読込に失敗"), "{err}");
+        assert!(err.contains(&src.display().to_string()), "{err}");
+        // 現状仕様: create_dir_all が read_dir より先に走る
+        assert!(dest.is_dir());
+    }
+
+    #[test]
+    fn copy_ext_directory_named_with_ext_is_copy_error() {
+        // 現状仕様を固定: 拡張子一致のディレクトリは is_file 判定がなく fs::copy が失敗する
+        let d = tempfile::tempdir().unwrap();
+        let src = d.path().join("src");
+        fs::create_dir_all(src.join("weird.rs")).unwrap();
+        let err = format!(
+            "{:#}",
+            copy_ext(&src, &d.path().join("dest"), "rs").unwrap_err()
+        );
+        assert!(err.contains("テストのコピーに失敗"), "{err}");
+    }
+
+    // ---- assemble ----
+
+    #[test]
+    fn assemble_without_reasoning_is_skipped_and_score_equals_axes_total() {
+        let c = cand("pub fn f() {}");
+        let r = StageResults {
+            compile: passed(),
+            test: passed(),
+            ..Default::default()
+        };
+        let e = assemble(&c, r, &Rubric::default());
+        assert_eq!(e.candidate_id, "c1");
+        assert!(matches!(e.reasoning, StageOutcome::Skipped));
+        assert_eq!(e.reasoning_score, 0.0);
+        assert_eq!(e.reasoning_comment, None);
+        assert_eq!(e.score, e.axes.total());
+        // compile+test のみ: correctness = 50 * 0.8
+        assert!((e.axes.correctness - 40.0).abs() < 1e-9, "{:?}", e.axes);
+        assert_eq!(e.axes.performance, 0.0);
+        assert_eq!(e.axes.resource_usage, 0.0);
+    }
+
+    #[test]
+    fn assemble_with_reasoning_score_marks_passed_but_axis_is_not_assigned_here() {
+        let c = cand("pub fn f() {}");
+        let rubric = Rubric {
+            reasoning: 10.0,
+            ..Rubric::default()
+        };
+        let r = StageResults {
+            compile: passed(),
+            test: passed(),
+            reasoning_score: Some(0.8),
+            reasoning_comment: Some("ok".into()),
+            ..Default::default()
+        };
+        let e = assemble(&c, r, &rubric);
+        assert!(matches!(
+            e.reasoning,
+            StageOutcome::Passed { duration_ms: 0 }
+        ));
+        assert_eq!(e.reasoning_score, 0.8);
+        assert_eq!(e.reasoning_comment.as_deref(), Some("ok"));
+        // 現状仕様: axes.reasoning は assign_reasoning() で後から付与されるため 0 のまま
+        assert_eq!(e.axes.reasoning, 0.0);
+        assert_eq!(e.score, e.axes.total());
+    }
+
+    #[test]
+    fn assemble_some_zero_reasoning_is_passed_not_skipped() {
+        let r = StageResults {
+            reasoning_score: Some(0.0),
+            ..Default::default()
+        };
+        let e = assemble(&cand("x"), r, &Rubric::default());
+        assert!(matches!(
+            e.reasoning,
+            StageOutcome::Passed { duration_ms: 0 }
+        ));
+        assert_eq!(e.reasoning_score, 0.0);
+    }
+
+    #[test]
+    fn assemble_compile_failure_zeroes_axes_and_passes_fields_through() {
+        let r = StageResults {
+            compile: StageOutcome::Failed {
+                detail: "boom".into(),
+            },
+            lint_warnings: 3,
+            mutation_caught: 2,
+            mutation_total: 5,
+            audit_findings: 1,
+            bench_ns: Some(42),
+            wasm_fuel_used: Some(9),
+            ..Default::default()
+        };
+        let e = assemble(&cand("pub fn f() {}"), r, &Rubric::default());
+        assert!(matches!(e.compile, StageOutcome::Failed { .. }));
+        assert_eq!(e.axes.security, 0.0);
+        assert_eq!(e.axes.maintainability, 0.0);
+        assert_eq!(e.score, e.axes.total());
+        assert_eq!(
+            (e.lint_warnings, e.mutation_caught, e.mutation_total),
+            (3, 2, 5)
+        );
+        assert_eq!(
+            (e.audit_findings, e.bench_ns, e.wasm_fuel_used),
+            (1, Some(42), Some(9))
+        );
+    }
+}
