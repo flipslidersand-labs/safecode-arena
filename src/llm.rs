@@ -116,7 +116,44 @@ mod tests {
         let long = "x".repeat(200);
         let text = format!(r#"{{"score": 0.9, "comment": "{long}"}}"#);
         let r = parse_review(&text).unwrap();
-        assert_eq!(r.comment.len(), 120);
+        assert_eq!(r.comment.chars().count(), 120);
+    }
+
+    #[test]
+    fn score_negative_clamped_to_zero() {
+        let r = parse_review(r#"{"score": -0.5, "comment": "bad"}"#).unwrap();
+        assert_eq!(r.score, 0.0);
+    }
+
+    #[test]
+    fn parse_bare_fence_without_json_tag() {
+        let text = "```\n{\"score\": 0.7, \"comment\": \"ok\"}\n```";
+        let r = parse_review(text).unwrap();
+        assert!((r.score - 0.7).abs() < 1e-9);
+        assert_eq!(r.comment, "ok");
+    }
+
+    #[test]
+    fn parse_with_preamble_returns_none() {
+        // 現状の挙動を固定: 前置説明文があると strip されずパース失敗 -> None
+        let text = "Here is the review:\n```json\n{\"score\": 0.5, \"comment\": \"x\"}\n```";
+        assert!(parse_review(text).is_none());
+    }
+
+    #[test]
+    fn comment_truncated_by_chars_not_bytes_for_japanese() {
+        let long = "あ".repeat(200);
+        let text = format!(r#"{{"score": 0.9, "comment": "{long}"}}"#);
+        let r = parse_review(&text).unwrap();
+        assert_eq!(r.comment.chars().count(), 120);
+        assert_eq!(r.comment.len(), 360);
+    }
+
+    #[test]
+    fn score_wrong_type_or_missing_returns_none() {
+        assert!(parse_review(r#"{"score": "0.5", "comment": "x"}"#).is_none());
+        assert!(parse_review(r#"{"comment": "x"}"#).is_none());
+        assert!(parse_review(r#"{"score": null, "comment": "x"}"#).is_none());
     }
 
     #[test]
@@ -130,5 +167,12 @@ mod tests {
         let p = build_prompt("fn add(a: i32, b: i32) -> i32 { a + b }", true);
         assert!(p.contains("fn add"));
         assert!(p.contains("PASSED"));
+    }
+
+    #[test]
+    fn build_prompt_marks_failed_when_test_failed() {
+        let p = build_prompt("fn f() {}", false);
+        assert!(p.contains("FAILED"));
+        assert!(!p.contains("PASSED"));
     }
 }
