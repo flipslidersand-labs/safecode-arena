@@ -950,11 +950,11 @@ fn run_bench_stage(root: &Path, timeout: Duration) -> Option<u64> {
     }
     let mut cmd = Command::new("cargo");
     cmd.arg("bench").current_dir(root);
-    let (_outcome, stderr) = runner::run_stage_capture("bench", cmd, timeout);
-    parse_criterion_ns(&stderr)
+    let (_outcome, output) = runner::run_stage_capture("bench", cmd, timeout);
+    parse_criterion_ns(&output)
 }
 
-/// Criterion の stderr 出力から中央値 (ns) を抽出する。
+/// Criterion の出力から中央値 (ns) を抽出する。
 ///
 /// 出力形式: `bench_name  time:   [lo_val lo_unit mid_val mid_unit hi_val hi_unit]`
 /// 複数ベンチがある場合は最小中央値を返す。
