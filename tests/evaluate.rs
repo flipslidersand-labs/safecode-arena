@@ -163,7 +163,7 @@ fn write_py(name: &str, source: &str) -> tempfile::NamedTempFile {
 }
 
 #[test]
-#[ignore = "CI(ubuntu-latest)にpytestが未インストールのためtest stageがFailedになりskip。qa-workflows rust-test.ymlにpip installフックが無く、追加issueで対応予定"]
+#[ignore = "pytest/ruff が必要。CI は ignored-tests.yml が --ignored で実行する (#108)"]
 fn python_clean_candidate_scores() {
     // 構文 OK・ruff 指摘なし・テストなし(=成功扱い)。
     // correctness 40 + security 20 + maintainability 10 + performance 15 = 85.0
@@ -216,7 +216,7 @@ fn python_inline_test_failure_detected() {
 }
 
 #[test]
-#[ignore = "CI(ubuntu-latest)にwasm32-wasip1 rustupターゲットが未インストールのためコンパイル失敗でskip。qa-workflows rust-test.ymlにtargetsフックが無く、追加issueで対応予定"]
+#[ignore = "wasm32-wasip1 ターゲットが必要。CI は ignored-tests.yml が --ignored で実行する (#108)"]
 fn wasm_entry_runs_sandbox_and_awards_resource_usage() {
     // wasm32-wasip1 にビルドして隔離実行できる候補。
     let cand = write_candidate("ok", "pub fn run() {}\n");
