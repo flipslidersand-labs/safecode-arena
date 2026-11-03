@@ -120,17 +120,23 @@ pub fn count_staticcheck_findings(stdout: &str) -> usize {
 
 /// ESLint の出力から指摘件数を数える。
 ///
-/// `eslint --format compact` は末尾に `N problems` または `N problem` を出力する。
+/// 末尾のサマリ(`N problems` / `N problem`、または stylish の `✖ N problems (E errors, W warnings)`)を優先し、
+/// 無ければ `.js:` を含む診断行(compact 形式)の数にフォールバックする。
 pub fn count_eslint_findings(output: &str) -> usize {
     for line in output.lines() {
+        // `✖ N problems (E errors, W warnings)` の括弧以降と先頭の `✖` を除いて判定する。
         let t = line.trim();
-        if let Some(rest) = t.strip_suffix(" problems") {
-            if let Ok(n) = rest.trim().parse::<usize>() {
-                return n;
-            }
-        }
-        if let Some(rest) = t.strip_suffix(" problem") {
-            if let Ok(n) = rest.trim().parse::<usize>() {
+        let t = t
+            .split(" (")
+            .next()
+            .unwrap_or(t)
+            .trim_start_matches('✖')
+            .trim();
+        for suffix in [" problems", " problem"] {
+            if let Some(n) = t
+                .strip_suffix(suffix)
+                .and_then(|r| r.trim().parse::<usize>().ok())
+            {
                 return n;
             }
         }
@@ -367,12 +373,34 @@ mod tests {
     }
 
     #[test]
-    fn count_eslint_decorated_summary_falls_back_to_line_scan() {
-        // 現状の挙動: `✖ 1 problem (...)` は suffix 一致せず、
-        // `.js:` を含む診断行の数にフォールバックする。
-        let out = "✖ 5 problems (3 errors, 2 warnings)\n";
-        assert_eq!(count_eslint_findings(out), 0);
+    fn count_eslint_stylish_plural_summary() {
+        let out = "\n/p/a.js\n  3:5  error  'x' is defined but never used  no-unused-vars\n\n✖ 5 problems (3 errors, 2 warnings)\n";
+        assert_eq!(count_eslint_findings(out), 5);
+        assert_eq!(
+            count_eslint_findings("✖ 5 problems (3 errors, 2 warnings)\n"),
+            5
+        );
+    }
+
+    #[test]
+    fn count_eslint_stylish_singular_summary() {
+        assert_eq!(
+            count_eslint_findings("✖ 1 problem (0 errors, 1 warning)\n"),
+            1
+        );
+    }
+
+    #[test]
+    fn count_eslint_summary_wins_over_diagnostic_lines() {
+        // サマリと `.js:` 診断行が併存しても二重計上しない。
+        let out = "a.js: line 1, col 1, error - x\nb.js: line 2, col 1, warning - y\n✖ 5 problems (3 errors, 2 warnings)\n";
+        assert_eq!(count_eslint_findings(out), 5);
+    }
+
+    #[test]
+    fn count_eslint_without_summary_falls_back_to_line_scan() {
         let out = "a.js: line 1, col 1, error - x\nb.js: line 2, col 1, warning - y\n";
         assert_eq!(count_eslint_findings(out), 2);
+        assert_eq!(count_eslint_findings(""), 0);
     }
 }
