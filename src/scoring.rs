@@ -707,4 +707,226 @@ mod tests {
         assert!(e.axes.reasoning.is_nan());
         assert!(e.score.is_nan());
     }
+
+    // ── Issue #122: 係数・境界の固定 ──────────────────────────────────────────
+
+    fn approx(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-9
+    }
+
+    /// compile 通過・クリーンなソースで audit / lint 警告 / lint 結果だけを変える。
+    fn axes_with(lint: &StageOutcome, warnings: usize, audit: usize) -> AxisScores {
+        axes_without_performance(
+            &passed(1),
+            &passed(1),
+            &StageOutcome::Skipped,
+            lint,
+            warnings,
+            &StageOutcome::Skipped,
+            &metrics("fn f(){}"),
+            &Rubric::default(),
+            0,
+            0,
+            audit,
+        )
+    }
+
+    #[test]
+    fn audit_findings_reduce_security_by_quarter_and_clamp_at_four() {
+        // lint Skipped → lint_sec=1.0, unsafe clean → 1.0。
+        // security = 20 * (0.4 + 0.4 + 0.2 * audit_sec)
+        let sec = |n| axes_with(&StageOutcome::Skipped, 0, n).security;
+        assert!(approx(sec(0), 20.0));
+        assert!(approx(sec(1), 20.0 * (0.8 + 0.2 * 0.75)));
+        assert!(approx(sec(3), 20.0 * (0.8 + 0.2 * 0.25)));
+        // 4 件以上で audit 項は 0（security の 20% 分 = 4.0 点が失われる）
+        assert!(approx(sec(4), 16.0));
+        assert!(approx(sec(10), 16.0));
+        assert!(approx(sec(1000), 16.0));
+    }
+
+    #[test]
+    fn audit_findings_ignored_when_compile_failed() {
+        let a = axes_without_performance(
+            &failed(),
+            &StageOutcome::Skipped,
+            &StageOutcome::Skipped,
+            &StageOutcome::Skipped,
+            0,
+            &StageOutcome::Skipped,
+            &metrics("fn f(){}"),
+            &Rubric::default(),
+            0,
+            0,
+            0,
+        );
+        assert_eq!(a.security, 0.0);
+        assert_eq!(a.maintainability, 0.0);
+    }
+
+    #[test]
+    fn lint_warnings_maintainability_steps_every_three() {
+        // maintainability = 10 * (1.0*0.6 + lint_maint*0.4)（関数長・行長は減点なし）
+        let maint = |w| axes_with(&passed(1), w, 0).maintainability;
+        assert!(approx(maint(0), 10.0));
+        assert!(approx(maint(2), 10.0)); // 2 件はまだ減点なし
+        assert!(approx(maint(3), 10.0 * (0.6 + 0.4 * 0.9))); // 3 件で 0.1 減点
+        assert!(approx(maint(5), maint(3))); // 4,5 件は 3 件と同じ
+        assert!(approx(maint(6), 10.0 * (0.6 + 0.4 * 0.8)));
+        assert!(approx(maint(30), 10.0 * 0.6)); // 10 段階で lint 項が 0
+        assert!(approx(maint(300), 10.0 * 0.6)); // クランプで負にならない
+    }
+
+    #[test]
+    fn lint_warnings_security_steps_every_one_and_clamps() {
+        // lint Passed: lint_sec = 1 - 0.1*w。security = 20 * (0.4 + 0.4*lint_sec + 0.2)
+        let sec = |w| axes_with(&passed(1), w, 0).security;
+        assert!(approx(sec(0), 20.0));
+        assert!(approx(sec(1), 20.0 * (0.6 + 0.4 * 0.9)));
+        assert!(approx(sec(10), 20.0 * 0.6));
+        assert!(approx(sec(30), 20.0 * 0.6));
+    }
+
+    #[test]
+    fn lint_timed_out_is_not_penalized() {
+        let t = StageOutcome::TimedOut { limit_ms: 1 };
+        assert!(approx(axes_with(&t, 5, 0).security, 20.0));
+    }
+
+    #[test]
+    fn performance_zero_ms_candidate_gets_full_marks() {
+        let r = Rubric::default();
+        // 単独で 0ms: fastest=0 だが 0 除算せず満点
+        let mut solo = vec![perf_eval(0)];
+        assign_performance(&mut solo, &r);
+        assert_eq!(solo[0].axes.performance, r.performance);
+
+        // 0ms と 10ms: 0ms が満点、10ms は 0/10 = 0
+        let mut two = vec![perf_eval(0), perf_eval(10)];
+        assign_performance(&mut two, &r);
+        assert_eq!(two[0].axes.performance, r.performance);
+        assert_eq!(two[1].axes.performance, 0.0);
+        assert_eq!(two[0].score, two[0].axes.total());
+    }
+
+    #[test]
+    fn performance_all_compile_failed_scores_zero() {
+        let r = Rubric::default();
+        let mut evals = vec![perf_eval(1), perf_eval(2)];
+        for e in &mut evals {
+            e.compile = failed();
+            e.test = StageOutcome::Skipped;
+        }
+        assign_performance(&mut evals, &r);
+        assert!(evals.iter().all(|e| e.axes.performance == 0.0));
+        assert!(evals.iter().all(|e| e.score == 0.0));
+    }
+
+    #[test]
+    fn performance_compile_passed_but_test_failed_scores_zero_in_time_path() {
+        let r = Rubric::default();
+        let mut bad = perf_eval(1);
+        bad.test = failed();
+        let mut evals = vec![bad, perf_eval(10)];
+        assign_performance(&mut evals, &r);
+        assert_eq!(evals[0].axes.performance, 0.0);
+        assert_eq!(evals[1].axes.performance, r.performance);
+    }
+
+    #[test]
+    fn performance_mixed_bench_ns_none_candidate_gets_zero() {
+        let r = Rubric::default();
+        // bench あり 1 件 → 全員 bench_ns 基準。bench なし候補は compile+test が
+        // 速くても 0（採点対象外）。
+        let mut with_bench = perf_eval(500);
+        with_bench.bench_ns = Some(1000);
+        let without = perf_eval(1);
+        let mut evals = vec![with_bench, without];
+        assign_performance(&mut evals, &r);
+        assert_eq!(evals[0].axes.performance, r.performance);
+        assert_eq!(evals[1].axes.performance, 0.0);
+    }
+
+    #[test]
+    fn performance_bench_only_on_failed_candidate_zeroes_everyone() {
+        let r = Rubric::default();
+        // bench を持つのが compile 失敗の候補だけ → 全員 None → 全員 0
+        let mut broken = perf_eval(1);
+        broken.compile = failed();
+        broken.bench_ns = Some(5);
+        let mut evals = vec![broken, perf_eval(1)];
+        assign_performance(&mut evals, &r);
+        assert!(evals.iter().all(|e| e.axes.performance == 0.0));
+    }
+
+    #[test]
+    fn performance_bench_zero_ns_is_full_marks() {
+        let r = Rubric::default();
+        let mut a = perf_eval(1);
+        a.bench_ns = Some(0);
+        let mut b = perf_eval(1);
+        b.bench_ns = Some(50);
+        let mut evals = vec![a, b];
+        assign_performance(&mut evals, &r);
+        assert_eq!(evals[0].axes.performance, r.performance);
+        assert_eq!(evals[1].axes.performance, 0.0);
+    }
+
+    #[test]
+    fn performance_empty_slice_is_noop() {
+        let mut evals: Vec<Evaluation> = vec![];
+        assign_performance(&mut evals, &Rubric::default());
+        assert!(evals.is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "長さが不一致")]
+    fn performance_each_panics_on_length_mismatch() {
+        let mut evals = vec![perf_eval(1)];
+        assign_performance_each(&mut evals, &[]);
+    }
+
+    fn scored(id: &str, s: f64) -> Evaluation {
+        let mut e = perf_eval(1);
+        e.candidate_id = id.into();
+        e.score = s;
+        e
+    }
+
+    fn ids(v: &[Evaluation]) -> Vec<&str> {
+        v.iter().map(|e| e.candidate_id.as_str()).collect()
+    }
+
+    #[test]
+    fn rank_ties_keep_input_order() {
+        // sort_by は安定ソート: 同点は入力順を保つ
+        let ranked = rank(vec![
+            scored("a", 10.0),
+            scored("b", 30.0),
+            scored("c", 10.0),
+            scored("d", 30.0),
+            scored("e", 10.0),
+        ]);
+        assert_eq!(ids(&ranked), vec!["b", "d", "a", "c", "e"]);
+    }
+
+    #[test]
+    fn rank_empty_and_single() {
+        assert!(rank(vec![]).is_empty());
+        assert_eq!(ids(&rank(vec![scored("x", 1.0)])), vec!["x"]);
+    }
+
+    #[test]
+    fn rank_with_nan_does_not_panic_and_keeps_all() {
+        let ranked = rank(vec![
+            scored("a", 10.0),
+            scored("nan", f64::NAN),
+            scored("b", 20.0),
+        ]);
+        // NaN は Equal 扱い。順序は未規定だが全件が残り panic しないことだけを固定する。
+        assert_eq!(ranked.len(), 3);
+        let mut got = ids(&ranked);
+        got.sort();
+        assert_eq!(got, vec!["a", "b", "nan"]);
+    }
 }
