@@ -80,6 +80,7 @@ impl Config {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LangWeights {
     #[serde(default)]
     correctness: Option<f64>,
@@ -107,6 +108,7 @@ struct LangWeights {
 
 /// 言語別テーブル。省略したフィールドは default（`[weights]`）を継承する。
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PartialRubric {
     correctness: Option<f64>,
     security: Option<f64>,
@@ -130,6 +132,7 @@ impl PartialRubric {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TomlConfig {
     #[serde(default)]
     weights: Option<LangWeights>,
@@ -396,11 +399,18 @@ correctness = \"high\"
         assert!(c.javascript.is_none() && c.typescript.is_none());
     }
 
-    // 現状の挙動を固定: 未知キーは無視される（deny_unknown_fields なし）。
+    // 未知キー（タイポ）は黙って無視せず、解析エラーにしてキー名を示す。
     #[test]
-    fn unknown_keys_are_silently_ignored() {
-        let c = load_str("[weights]\nsecurty = 99\ncorrectness = 60\n");
-        assert_eq!(c.default.correctness, 60.0);
-        assert_eq!(c.default.security, 20.0);
+    fn unknown_keys_are_rejected() {
+        for (toml, key) in [
+            ("[weights]\nsecurty = 99\ncorrectness = 60\n", "securty"),
+            ("[weights.go]\nsecurty = 5\n", "securty"),
+            ("[wieghts]\ncorrectness = 60\n", "wieghts"),
+            ("[weights.cobol]\ncorrectness = 1\n", "cobol"),
+        ] {
+            let e = format!("{:#}", load_str_err(toml));
+            assert!(e.contains("設定ファイルの解析に失敗"), "{e}");
+            assert!(e.contains(key), "{e}");
+        }
     }
 }
