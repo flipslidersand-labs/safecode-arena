@@ -657,4 +657,54 @@ mod tests {
         assert_eq!(x[1].axes.performance, y[1].axes.performance);
         assert_eq!(x[1].score, y[1].score);
     }
+
+    fn reasoning_rubric(w: f64) -> Rubric {
+        Rubric {
+            reasoning: w,
+            ..Rubric::default()
+        }
+    }
+
+    #[test]
+    fn reasoning_zero_weight_leaves_eval_unchanged() {
+        let mut e = perf_eval(1);
+        e.axes.correctness = 10.0;
+        e.axes.reasoning = 3.0;
+        e.score = 99.0; // total() とは異なる値: 再計算されないことを確認
+        assign_reasoning(&mut e, 1.0, &reasoning_rubric(0.0));
+        assert_eq!(e.axes.reasoning, 3.0);
+        assert_eq!(e.score, 99.0);
+    }
+
+    #[test]
+    fn reasoning_scales_by_weight_and_recomputes_score() {
+        let mut e = perf_eval(1);
+        e.axes.correctness = 10.0;
+        assign_reasoning(&mut e, 0.5, &reasoning_rubric(10.0));
+        assert_eq!(e.axes.reasoning, 5.0);
+        assert_eq!(e.score, e.axes.total());
+        assert_eq!(e.score, 15.0);
+    }
+
+    #[test]
+    fn reasoning_llm_score_is_clamped_to_unit_range() {
+        let r = reasoning_rubric(10.0);
+        let mut hi = perf_eval(1);
+        assign_reasoning(&mut hi, 2.0, &r);
+        assert_eq!(hi.axes.reasoning, 10.0);
+        let mut lo = perf_eval(1);
+        assign_reasoning(&mut lo, -1.0, &r);
+        assert_eq!(lo.axes.reasoning, 0.0);
+    }
+
+    #[test]
+    fn reasoning_nan_llm_score_propagates_nan() {
+        // 現行仕様の固定: f64::clamp は NaN をそのまま返すため、NaN の
+        // llm_score は reasoning と score を NaN にする（0 や上限には丸められない）。
+        // 変更する場合は呼び出し側での NaN 除外とあわせて意図的に更新すること。
+        let mut e = perf_eval(1);
+        assign_reasoning(&mut e, f64::NAN, &reasoning_rubric(10.0));
+        assert!(e.axes.reasoning.is_nan());
+        assert!(e.score.is_nan());
+    }
 }
