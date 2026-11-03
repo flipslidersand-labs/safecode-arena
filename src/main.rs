@@ -86,8 +86,8 @@ enum Command {
     Generate {
         /// spec ファイル（.md / .txt）。
         spec: String,
-        /// 生成する候補数。
-        #[arg(long, default_value_t = 3)]
+        /// 生成する候補数（1〜8）。
+        #[arg(long, default_value_t = 3, value_parser = generator::parse_candidate_count)]
         candidates: usize,
         /// 評価ステージ（compile/test 等）のタイムアウト秒数。
         #[arg(long, default_value_t = 30)]
@@ -313,6 +313,9 @@ fn run_generate(
         anyhow::bail!("LLM からコード候補を取得できませんでした。SAFECODE_LLM_BACKEND / API キーを確認してください。");
     }
     eprintln!("[generate] {} 候補を取得", sources.len());
+    if let Some(w) = generator::shortfall_warning(n, sources.len()) {
+        eprintln!("[generate] 警告: {w}");
+    }
 
     let timeout = Duration::from_secs(timeout_secs);
     // generate の候補は常に Rust
