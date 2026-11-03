@@ -26,6 +26,10 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Get rustc version
+        id: rustc
+        run: echo "version=$(rustc --version | tr ' ' '-')" >> "$GITHUB_OUTPUT"
+
       - name: Cache cargo registry and target
         uses: actions/cache@v4
         with:
@@ -33,9 +37,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-${{ runner.environment }}-cargo-${{ steps.rustc.outputs.version }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-${{ runner.environment }}-cargo-${{ steps.rustc.outputs.version }}-
 
       - name: Build release binary
         run: cargo build --release
@@ -43,6 +47,8 @@ jobs:
       - name: Evaluate examples (Rust candidates)
         id: evaluate
         run: |
+          rm -f /tmp/report.md
+          set +e
           ./target/release/safecode evaluate \
             examples/good.rs \
             examples/buggy.rs \
@@ -50,10 +56,21 @@ jobs:
             --out /tmp/report.md \
             --db /tmp/safecode.db \
             --regression-threshold 1.0
-        continue-on-error: true
+          code=$?
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
 
+      - name: Add report to job summary
+        run: |
+          if [ -f /tmp/report.md ]; then
+            { echo "## safecode evaluate 結果"; echo; cat /tmp/report.md; } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "> safecode: レポートが生成されませんでした。" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # fork PR では GITHUB_TOKEN が read-only のためコメント不可(サマリーのみ)
       - name: Post report as PR comment
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/github-script@v7
         with:
           script: |
@@ -89,8 +106,20 @@ jobs:
               });
             }
 
-      - name: Fail on regression
-        if: steps.evaluate.outcome == 'failure'
+      # 終了コード 1 は「回帰検出」(process::exit(1))だが、main の anyhow エラーも 1 になる。
+      # 回帰判定はレポート出力後に行われるため、code=1 かつレポートあり = 回帰、それ以外は実行エラー。
+      - name: Fail on regression or execution error
+        env:
+          CODE: ${{ steps.evaluate.outputs.code }}
         run: |
-          echo "::error::スコアリグレッションが検出されました。PR コメントのレポートを確認してください。"
+          if [ "$CODE" = "0" ]; then
+            exit 0
+          fi
+          if [ "$CODE" = "1" ] && [ -f /tmp/report.md ]; then
+            echo "::error::スコアリグレッションが検出されました。ジョブサマリー/PR コメントのレポートを確認してください。"
+          elif [ -f /tmp/report.md ]; then
+            echo "::error::safecode evaluate が実行エラーで終了しました (exit code ${CODE})。回帰ではありません。ログを確認してください。"
+          else
+            echo "::error::safecode evaluate が実行エラーで終了し、レポートが生成されませんでした (exit code ${CODE:-unknown})。回帰ではありません。ログを確認してください。"
+          fi
           exit 1
