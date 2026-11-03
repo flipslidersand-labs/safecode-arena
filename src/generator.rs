@@ -82,8 +82,12 @@ pub fn parse_candidates(output: &str) -> Vec<String> {
         .filter_map(|section| {
             let s = section.trim();
             // ```rust ... ``` ブロックを探す
-            let start = s.find("```rust").map(|i| i + 7)?;
-            let rest = &s[start..];
+            let start = s.find("```rust").map(|i| i + 3)?;
+            // タグは行末まで読み、trim して "rust" と完全一致のときだけ採用（```rustc 等は破棄）
+            let (tag, rest) = s[start..].split_once('\n')?;
+            if tag.trim() != "rust" {
+                return None;
+            }
             let end = rest.find("```")?;
             let code = rest[..end].trim().to_string();
             if code.is_empty() {
@@ -220,10 +224,20 @@ pub fn add(a: i32, b: i32) -> i32 { b + a }
     }
 
     #[test]
-    fn parse_candidates_rust_prefix_tag_leaks_into_code() {
-        // 現状の挙動（要報告）: "```rustc" は "```rust" 前方一致し、残りの "c" がコード先頭に混入する。
-        let out = "---CANDIDATE---\n```rustc\npub fn f() {}\n```\n";
-        assert_eq!(parse_candidates(out), vec!["c\npub fn f() {}".to_string()]);
+    fn parse_candidates_rejects_rust_prefixed_tags() {
+        // "```rustc" / "```rust,ignore" は "rust" と完全一致しないので破棄（#142）。
+        for tag in ["rustc", "rust,ignore", "rustfmt"] {
+            let out = format!("---CANDIDATE---\n```{tag}\npub fn f() {{}}\n```\n");
+            assert!(parse_candidates(&out).is_empty(), "tag={tag:?}");
+        }
+    }
+
+    #[test]
+    fn parse_candidates_accepts_rust_tag_with_trailing_space_or_crlf() {
+        for tag in ["rust ", "rust\r"] {
+            let out = format!("---CANDIDATE---\n```{tag}\npub fn f() {{}}\n```\n");
+            assert_eq!(parse_candidates(&out), vec!["pub fn f() {}".to_string()]);
+        }
     }
 
     #[test]
