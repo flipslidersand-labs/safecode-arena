@@ -14,6 +14,9 @@ jobs:
       test-args: "--lib --tests"
       clippy-args: "--lib --tests --bins"
       run-coverage: false
-      # tests は sandbox/DB 実環境依存のため CI では skip
-      run-tests: false
+      # #101: 実際には外部DB不要(SQLiteはbundled)・python3/go/nodeはubuntu-latest標準搭載・
+      # 任意ツール(staticcheck/eslint/tsc/mutmut等)は_available()チェックでグレースフルにskipされる
+      # ため、run-tests無効化は不要と判明。db_persists_runs_and_detects_regression の古い
+      # アサーション(exit(1)仕様に対しsuccessを期待)を修正しrun-testsを再度有効化した。
+      run-tests: true
       runner: ubuntu-latest
