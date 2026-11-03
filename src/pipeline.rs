@@ -1024,6 +1024,85 @@ mod bench_tests {
     }
 
     #[test]
+    fn parse_criterion_ns_parses_ms_and_s_units() {
+        assert_eq!(
+            parse_criterion_ns("b  time:   [1.0 ms 1.5 ms 2.0 ms]"),
+            Some(1_500_000)
+        );
+        assert_eq!(
+            parse_criterion_ns("b  time:   [1.0 s 2.0 s 3.0 s]"),
+            Some(2_000_000_000)
+        );
+    }
+
+    #[test]
+    fn parse_criterion_ns_accepts_us_ascii_unit() {
+        assert_eq!(
+            parse_criterion_ns("b  time:   [1.0 us 2.5 us 3.0 us]"),
+            Some(2500)
+        );
+    }
+
+    #[test]
+    fn parse_criterion_ns_compares_min_across_units() {
+        // 単位が違っても ns 換算で最小を採る（900 µs < 1 ms）
+        let output = "a  time:   [1.0 ms 1.0 ms 1.0 ms]\nb  time:   [1.0 us 900.0 us 1.0 ms]";
+        assert_eq!(parse_criterion_ns(output), Some(900_000));
+    }
+
+    #[test]
+    fn parse_criterion_ns_unknown_unit_is_skipped() {
+        assert_eq!(
+            parse_criterion_ns("b  time:   [1.0 ps 2.0 ps 3.0 ps]"),
+            None
+        );
+        // 未知単位の行は無視し、有効な行だけで最小を決める
+        let output = "x  time:   [1.0 ps 2.0 ps 3.0 ps]\ny  time:   [1.0 ns 7.0 ns 9.0 ns]";
+        assert_eq!(parse_criterion_ns(output), Some(7));
+    }
+
+    #[test]
+    fn parse_criterion_ns_incomplete_line_is_skipped() {
+        // values.len() < 4（中央値の単位がない）
+        assert_eq!(parse_criterion_ns("b  time:   [1.0 ns 2.0"), None);
+        assert_eq!(parse_criterion_ns("b  time:   "), None);
+        let output = "x  time:   [1.0 ns 2.0]\ny  time:   [1.0 ns 7.0 ns 9.0 ns]";
+        assert_eq!(parse_criterion_ns(output), Some(7));
+    }
+
+    #[test]
+    fn parse_criterion_ns_non_numeric_median_is_skipped() {
+        assert_eq!(
+            parse_criterion_ns("b  time:   [1.0 ns abc ns 3.0 ns]"),
+            None
+        );
+        let output = "x  time:   [1.0 ns abc ns 3.0 ns]\ny  time:   [1.0 ns 7.0 ns 9.0 ns]";
+        assert_eq!(parse_criterion_ns(output), Some(7));
+    }
+
+    #[test]
+    fn parse_criterion_ns_trims_closing_bracket_on_unit() {
+        // 4 トークンのみで中央値の単位に ']' が付く形
+        assert_eq!(
+            parse_criterion_ns("b  time:   [1.0 ns 5.0 ms]"),
+            Some(5_000_000)
+        );
+        assert_eq!(parse_criterion_ns("b  time:   [1.0 ns 5.0 ps]"), None);
+    }
+
+    #[test]
+    fn parse_criterion_ns_rounds_to_nearest() {
+        assert_eq!(
+            parse_criterion_ns("b  time:   [1.0 ns 2.5 ns 3.0 ns]"),
+            Some(3)
+        );
+        assert_eq!(
+            parse_criterion_ns("b  time:   [1.0 ns 2.4 ns 3.0 ns]"),
+            Some(2)
+        );
+    }
+
+    #[test]
     fn has_bench_detects_criterion() {
         use crate::analysis::has_bench;
         let src = r#"use criterion::{criterion_group, criterion_main, Criterion};
@@ -1032,6 +1111,60 @@ criterion_group!(benches, bench);
 criterion_main!(benches);"#;
         assert!(has_bench(src));
         assert!(!has_bench("fn regular() {}"));
+    }
+}
+
+#[cfg(test)]
+mod audit_tests {
+    use super::*;
+
+    #[test]
+    fn parse_audit_json_typical_count() {
+        let out = r#"{"database":{"advisory-count":1},"vulnerabilities":{"found":true,"count":2,"list":[]}}"#;
+        assert_eq!(parse_audit_json(out), Some(2));
+    }
+
+    #[test]
+    fn parse_audit_json_zero_vulnerabilities() {
+        let out = r#"{"vulnerabilities":{"found":false,"count":0,"list":[]}}"#;
+        assert_eq!(parse_audit_json(out), Some(0));
+    }
+
+    #[test]
+    fn parse_audit_json_invalid_returns_none() {
+        assert_eq!(parse_audit_json(""), None);
+        assert_eq!(parse_audit_json("not json"), None);
+        assert_eq!(parse_audit_json("{broken"), None);
+        // vulnerabilities / count が欠けている
+        assert_eq!(parse_audit_json(r#"{"foo":1}"#), None);
+        assert_eq!(parse_audit_json(r#"{"vulnerabilities":{}}"#), None);
+        // count が数値でない／負数
+        assert_eq!(
+            parse_audit_json(r#"{"vulnerabilities":{"count":"2"}}"#),
+            None
+        );
+        assert_eq!(
+            parse_audit_json(r#"{"vulnerabilities":{"count":-1}}"#),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_audit_json_skips_progress_lines() {
+        let out = "    Fetching advisory database\n    Loaded 500 advisories\n{\"vulnerabilities\":{\"count\":3}}\n";
+        assert_eq!(parse_audit_json(out), Some(3));
+    }
+
+    #[test]
+    fn parse_audit_json_uses_first_valid_line() {
+        let out = "{\"vulnerabilities\":{\"count\":1}}\n{\"vulnerabilities\":{\"count\":9}}";
+        assert_eq!(parse_audit_json(out), Some(1));
+    }
+
+    #[test]
+    fn parse_audit_json_skips_invalid_json_line_before_valid() {
+        let out = "{not valid\n{\"other\":1}\n  {\"vulnerabilities\":{\"count\":4}}  ";
+        assert_eq!(parse_audit_json(out), Some(4));
     }
 }
 
