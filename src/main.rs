@@ -9,7 +9,7 @@
 
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
-use safecode_arena::config::Rubric;
+use safecode_arena::config::Config;
 use safecode_arena::generator;
 use safecode_arena::model::{Candidate, Language};
 use safecode_arena::store::{self, Store};
@@ -191,7 +191,7 @@ fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
         anyhow::bail!("候補ファイルを 1 つ以上指定してください");
     }
     let timeout = Duration::from_secs(args.timeout_secs);
-    let rubric = Rubric::load(args.config.as_deref())?;
+    let config = Config::load(args.config.as_deref())?;
     let eval_opts = pipeline::EvalOptions {
         tests_dir: args.tests.as_deref().map(Path::new),
         prop_tests_dir: args.prop_tests.as_deref().map(Path::new),
@@ -207,16 +207,19 @@ fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
     // 評価前に全候補を読み込み、未対応拡張子・ID 重複を先に検出する。
     let candidates = pipeline::load_candidates(&args.candidates)?;
     let mut evals = Vec::with_capacity(candidates.len());
+    let mut rubrics = Vec::with_capacity(candidates.len());
     for candidate in &candidates {
         eprintln!("評価中: {} ...", candidate.id);
+        let rubric = config.rubric_for(candidate.language.name());
         evals.push(pipeline::evaluate_candidate(
             candidate, timeout, &rubric, &eval_opts,
         )?);
+        rubrics.push(rubric);
     }
 
-    scoring::assign_performance(&mut evals, &rubric);
-    for e in &mut evals {
-        scoring::assign_reasoning(e, e.reasoning_score, &rubric);
+    scoring::assign_performance_each(&mut evals, &rubrics);
+    for (e, rubric) in evals.iter_mut().zip(&rubrics) {
+        scoring::assign_reasoning(e, e.reasoning_score, rubric);
     }
     let ranked = scoring::rank(evals);
 
@@ -312,7 +315,8 @@ fn run_generate(
     eprintln!("[generate] {} 候補を取得", sources.len());
 
     let timeout = Duration::from_secs(timeout_secs);
-    let rubric = Rubric::load(config.as_deref())?;
+    // generate の候補は常に Rust
+    let rubric = Config::load(config.as_deref())?.rubric_for(Language::Rust.name());
 
     let mut evals = Vec::with_capacity(sources.len());
     for (i, source) in sources.iter().enumerate() {

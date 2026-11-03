@@ -62,16 +62,18 @@ pub struct Config {
     pub python: Option<Rubric>,
     pub go: Option<Rubric>,
     pub javascript: Option<Rubric>,
+    pub typescript: Option<Rubric>,
 }
 
 impl Config {
-    /// 言語名（"rust", "go", "python", "javascript"）に合ったルーブリックを返す。
+    /// 言語名（"rust", "go", "python", "javascript", "typescript"）に合ったルーブリックを返す。
     pub fn rubric_for(&self, lang: &str) -> Rubric {
         match lang {
             "rust" => self.rust.unwrap_or(self.default),
             "python" => self.python.unwrap_or(self.default),
             "go" => self.go.unwrap_or(self.default),
             "javascript" => self.javascript.unwrap_or(self.default),
+            "typescript" => self.typescript.unwrap_or(self.default),
             _ => self.default,
         }
     }
@@ -92,13 +94,39 @@ struct LangWeights {
     #[serde(default)]
     reasoning: Option<f64>,
     #[serde(default)]
-    rust: Option<Rubric>,
+    rust: Option<PartialRubric>,
     #[serde(default)]
-    python: Option<Rubric>,
+    python: Option<PartialRubric>,
     #[serde(default)]
-    go: Option<Rubric>,
+    go: Option<PartialRubric>,
     #[serde(default)]
-    javascript: Option<Rubric>,
+    javascript: Option<PartialRubric>,
+    #[serde(default)]
+    typescript: Option<PartialRubric>,
+}
+
+/// 言語別テーブル。省略したフィールドは default（`[weights]`）を継承する。
+#[derive(Debug, Default, Deserialize)]
+struct PartialRubric {
+    correctness: Option<f64>,
+    security: Option<f64>,
+    performance: Option<f64>,
+    maintainability: Option<f64>,
+    resource_usage: Option<f64>,
+    reasoning: Option<f64>,
+}
+
+impl PartialRubric {
+    fn apply(&self, base: Rubric) -> Rubric {
+        Rubric {
+            correctness: self.correctness.unwrap_or(base.correctness),
+            security: self.security.unwrap_or(base.security),
+            performance: self.performance.unwrap_or(base.performance),
+            maintainability: self.maintainability.unwrap_or(base.maintainability),
+            resource_usage: self.resource_usage.unwrap_or(base.resource_usage),
+            reasoning: self.reasoning.unwrap_or(base.reasoning),
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -148,17 +176,16 @@ impl Config {
             })
             .unwrap_or(base);
 
-        let (rust, python, go, javascript) = parsed
-            .weights
-            .map(|w| (w.rust, w.python, w.go, w.javascript))
-            .unwrap_or_default();
+        let w = parsed.weights.unwrap_or_default();
+        let resolve = |p: &Option<PartialRubric>| p.as_ref().map(|p| p.apply(default_rubric));
 
         Ok(Config {
             default: default_rubric,
-            rust,
-            python,
-            go,
-            javascript,
+            rust: resolve(&w.rust),
+            python: resolve(&w.python),
+            go: resolve(&w.go),
+            javascript: resolve(&w.javascript),
+            typescript: resolve(&w.typescript),
         })
     }
 }
@@ -226,5 +253,37 @@ resource_usage = 5
     fn rubric_for_unknown_lang_returns_default() {
         let c = Config::default();
         assert_eq!(c.rubric_for("cobol").correctness, 50.0);
+    }
+
+    fn load_str(toml: &str) -> Config {
+        let mut f = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
+        write!(f, "{toml}").unwrap();
+        Config::load(Some(f.path().to_str().unwrap())).unwrap()
+    }
+
+    #[test]
+    fn partial_lang_override_inherits_default() {
+        let c =
+            load_str("[weights]\ncorrectness = 40\nsecurity = 30\n\n[weights.go]\nsecurity = 5\n");
+        let g = c.rubric_for("go");
+        assert_eq!(g.security, 5.0);
+        // 省略フィールドは [weights]（default）を継承する
+        assert_eq!(g.correctness, 40.0);
+        assert_eq!(g.performance, 15.0);
+    }
+
+    #[test]
+    fn typescript_override_applies() {
+        let c = load_str("[weights.typescript]\ncorrectness = 65\n");
+        assert_eq!(c.rubric_for("typescript").correctness, 65.0);
+        assert_eq!(c.rubric_for("javascript").correctness, 50.0);
+    }
+
+    #[test]
+    fn no_lang_tables_means_default_for_all() {
+        let c = load_str("[weights]\ncorrectness = 70\n");
+        for l in ["rust", "python", "go", "javascript", "typescript"] {
+            assert_eq!(c.rubric_for(l).correctness, 70.0, "{l}");
+        }
     }
 }
