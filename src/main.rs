@@ -247,10 +247,10 @@ fn persist_and_report_regressions(
     let mut has_regression = false;
 
     if let Some(prev_id) = s.latest_run_id()? {
-        let prev = s.run_scores(prev_id)?;
+        let prev = s.run_comparable_scores(prev_id)?;
         let regs = store::find_regressions(&prev, ranked, threshold);
         if regs.is_empty() {
-            eprintln!("リグレッションなし（直近 run #{prev_id} と比較）");
+            eprintln!("リグレッションなし（直近 run #{prev_id} と比較、performance 軸を除く）");
         } else {
             has_regression = true;
             eprintln!("⚠️  リグレッション検出（直近 run #{prev_id} 比）:");

@@ -2,8 +2,10 @@
 //!
 //! - 各 `evaluate` 実行を 1 つの run として保存する。
 //! - 同じ候補 ID のスコアが過去 run より下がっていれば「リグレッション」として検出する。
+//!   比較に使うのは performance 軸を除いた絶対評価軸の合計（`comparable_score`）。
+//!   performance は run 内の最速候補に対する相対値で run 間比較できないため除外する。
 
-use crate::model::Evaluation;
+use crate::model::{AxisScores, Evaluation};
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -31,6 +33,26 @@ impl Regression {
     pub fn delta(&self) -> f64 {
         self.current - self.previous
     }
+}
+
+/// run 間比較に使うスコア。相対評価の performance 軸を除いた軸の合計。
+pub fn comparable_score(axes: &AxisScores) -> f64 {
+    axes.total() - axes.performance
+}
+
+/// 保存済み detail_json から比較用スコアを計算する。
+/// `axes` を持たない古い行は計算不能として None（比較対象外）。
+fn comparable_from_detail(detail_json: &str) -> Option<f64> {
+    let v: serde_json::Value = serde_json::from_str(detail_json).ok()?;
+    let axes = v.get("axes")?.as_object()?;
+    let get = |k: &str| axes.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0);
+    Some(
+        get("correctness")
+            + get("security")
+            + get("maintainability")
+            + get("resource_usage")
+            + get("reasoning"),
+    )
 }
 
 /// SQLite を裏に持つ評価ストア。
@@ -112,6 +134,25 @@ impl Store {
         Ok(map)
     }
 
+    /// 指定 run の候補 ID → 比較用スコア（performance 除く）。
+    /// detail_json に axes が無く計算できない行は含めない（比較対象外）。
+    pub fn run_comparable_scores(&self, run_id: i64) -> Result<HashMap<String, f64>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT candidate_id, detail_json FROM evaluations WHERE run_id = ?1")?;
+        let rows = stmt.query_map([run_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        let mut map = HashMap::new();
+        for row in rows {
+            let (id, detail) = row?;
+            if let Some(s) = comparable_from_detail(&detail) {
+                map.insert(id, s);
+            }
+        }
+        Ok(map)
+    }
+
     /// 全 run の要約（新しい順）。
     pub fn list_runs(&self) -> Result<Vec<RunSummary>> {
         let mut stmt = self.conn.prepare(
@@ -136,7 +177,8 @@ impl Store {
     }
 }
 
-/// 過去スコアと現在の評価を突き合わせ、スコアが下がった候補を返す。
+/// 過去の比較用スコア（`run_comparable_scores`）と現在の評価を突き合わせ、下がった候補を返す。
+/// 現在側も performance を除いた `comparable_score` で比べる。
 /// `threshold` 以上下落したものだけを対象にする（誤差・揺らぎ除け）。
 pub fn find_regressions(
     previous: &HashMap<String, f64>,
@@ -146,11 +188,12 @@ pub fn find_regressions(
     let mut out = Vec::new();
     for e in current {
         if let Some(&prev) = previous.get(&e.candidate_id) {
-            if prev - e.score >= threshold {
+            let cur = comparable_score(&e.axes);
+            if prev - cur >= threshold {
                 out.push(Regression {
                     candidate_id: e.candidate_id.clone(),
                     previous: prev,
-                    current: e.score,
+                    current: cur,
                 });
             }
         }
@@ -163,7 +206,21 @@ mod tests {
     use super::*;
     use crate::model::{AxisScores, Evaluation, StageOutcome};
 
+    /// correctness 軸に score を置いた評価（performance は 0）。
     fn eval(id: &str, score: f64) -> Evaluation {
+        let mut e = eval_raw(id, score);
+        e.axes.correctness = score;
+        e
+    }
+
+    fn eval_axes(id: &str, correctness: f64, performance: f64) -> Evaluation {
+        let mut e = eval_raw(id, correctness + performance);
+        e.axes.correctness = correctness;
+        e.axes.performance = performance;
+        e
+    }
+
+    fn eval_raw(id: &str, score: f64) -> Evaluation {
         Evaluation {
             candidate_id: id.into(),
             compile: StageOutcome::Passed { duration_ms: 1 },
@@ -233,5 +290,59 @@ mod tests {
         prev.insert("a".to_string(), 85.0);
         let curr = vec![eval("a", 84.9)];
         assert!(find_regressions(&prev, &curr, 1.0).is_empty());
+    }
+
+    #[test]
+    fn performance_drop_alone_is_not_regression() {
+        // 前 run: performance 20 / 今 run: 速い候補が増えて performance 5
+        let mut s = Store::open_in_memory().unwrap();
+        let run = s.save_run("t", &[eval_axes("a", 60.0, 20.0)]).unwrap();
+        let prev = s.run_comparable_scores(run).unwrap();
+        let curr = vec![eval_axes("a", 60.0, 5.0)];
+        assert!(find_regressions(&prev, &curr, 1.0).is_empty());
+    }
+
+    #[test]
+    fn correctness_drop_is_regression_even_if_performance_rises() {
+        let mut s = Store::open_in_memory().unwrap();
+        let run = s.save_run("t", &[eval_axes("a", 60.0, 5.0)]).unwrap();
+        let prev = s.run_comparable_scores(run).unwrap();
+        let curr = vec![eval_axes("a", 40.0, 20.0)];
+        let regs = find_regressions(&prev, &curr, 1.0);
+        assert_eq!(regs.len(), 1);
+        assert_eq!(regs[0].previous, 60.0);
+        assert_eq!(regs[0].current, 40.0);
+    }
+
+    #[test]
+    fn threshold_boundary_is_inclusive() {
+        let mut prev = HashMap::new();
+        prev.insert("a".to_string(), 60.0);
+        assert_eq!(
+            find_regressions(&prev, &[eval_axes("a", 59.0, 9.0)], 1.0).len(),
+            1
+        );
+        assert!(find_regressions(&prev, &[eval_axes("a", 59.5, 0.0)], 1.0).is_empty());
+    }
+
+    #[test]
+    fn rows_without_axes_are_excluded_from_comparison() {
+        let s = Store::open_in_memory().unwrap();
+        s.conn
+            .execute("INSERT INTO runs (id, created_at) VALUES (1, 't')", [])
+            .unwrap();
+        s.conn
+            .execute(
+                "INSERT INTO evaluations (run_id, candidate_id, score, detail_json)
+                 VALUES (1, 'old', 90.0, '{\"candidate_id\":\"old\",\"score\":90.0}'),
+                        (1, 'new', 50.0, '{\"axes\":{\"correctness\":30.0,\"performance\":20.0}}')",
+                [],
+            )
+            .unwrap();
+        let m = s.run_comparable_scores(1).unwrap();
+        assert!(!m.contains_key("old"));
+        assert_eq!(m.get("new"), Some(&30.0));
+        // 古い行は前回値なし扱い → 現在が低くても回帰にならない
+        assert!(find_regressions(&m, &[eval("old", 0.0)], 1.0).is_empty());
     }
 }
