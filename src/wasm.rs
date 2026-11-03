@@ -164,4 +164,91 @@ mod tests {
         let r = run_bytes(wat, 10_000, ONE_MB);
         assert!(matches!(r.outcome, StageOutcome::Failed { .. }));
     }
+
+    /// `proc_exit(code)` を `_start` で呼ぶ WAT。
+    fn exit_wat(code: i32) -> String {
+        format!(
+            r#"(module
+                (import "wasi_snapshot_preview1" "proc_exit" (func $exit (param i32)))
+                (func (export "_start") (i32.const {code}) (call $exit)))"#
+        )
+    }
+
+    fn failed_detail(o: &StageOutcome) -> &str {
+        match o {
+            StageOutcome::Failed { detail } => detail,
+            other => panic!("Failed を期待したが {other:?}"),
+        }
+    }
+
+    // 注意: 以下3件は現状の挙動の固定。wasmtime 46 では backtrace 付きでラップされた
+    // エラーから I32Exit/Trap の downcast が効かず、proc_exit(0) も Failed になり、
+    // detail は先頭行 "error while executing at wasm backtrace:" だけになる。
+    // classify_error の修正時は期待値を Passed / "exit code 3" 等へ更新すること。
+    const BACKTRACE_HEAD: &str = "error while executing at wasm backtrace:";
+
+    #[test]
+    fn proc_exit_zero_current_behavior_is_failed() {
+        let r = run_bytes(exit_wat(0).as_bytes(), 100_000, ONE_MB);
+        assert_eq!(failed_detail(&r.outcome), BACKTRACE_HEAD);
+        assert!(r.fuel_used.is_some_and(|u| u <= 100_000));
+    }
+
+    #[test]
+    fn proc_exit_nonzero_current_behavior_loses_exit_code() {
+        let r = run_bytes(exit_wat(3).as_bytes(), 100_000, ONE_MB);
+        assert_eq!(failed_detail(&r.outcome), BACKTRACE_HEAD);
+        assert!(r.fuel_used.is_some_and(|u| u <= 100_000));
+    }
+
+    #[test]
+    fn unreachable_trap_fails_with_first_line_only() {
+        let wat = br#"(module (func (export "_start") unreachable))"#;
+        let r = run_bytes(wat, 100_000, ONE_MB);
+        assert_eq!(failed_detail(&r.outcome), BACKTRACE_HEAD);
+        assert!(r.fuel_used.is_some_and(|u| u <= 100_000));
+    }
+
+    #[test]
+    fn initial_memory_over_limit_fails_instantiate() {
+        // 100 page = 6.4MB > 1MB 上限。
+        let wat = br#"(module (memory 100) (func (export "_start")))"#;
+        let r = run_bytes(wat, 100_000, ONE_MB);
+        let detail = failed_detail(&r.outcome);
+        assert!(detail.starts_with("instantiate 失敗"), "detail={detail:?}");
+        assert_eq!(r.fuel_used, None);
+    }
+
+    #[test]
+    fn initial_memory_within_limit_passes() {
+        // 1 page = 64KiB < 1MB。上限判定が過剰でないことの対照。
+        let wat = br#"(module (memory 1) (func (export "_start")))"#;
+        let r = run_bytes(wat, 100_000, ONE_MB);
+        assert!(r.outcome.is_passed(), "outcome={:?}", r.outcome);
+    }
+
+    #[test]
+    fn invalid_bytes_fail_module_load() {
+        let r = run_bytes(b"\0bad", 100_000, ONE_MB);
+        let detail = failed_detail(&r.outcome);
+        assert!(detail.starts_with("module ロード失敗"), "detail={detail:?}");
+        assert_eq!(r.fuel_used, None);
+    }
+
+    #[test]
+    fn nonexistent_path_fails_read() {
+        let p = Path::new("/nonexistent/safecode-arena/no-such.wasm");
+        let r = run_wasm(p, 100_000, ONE_MB);
+        let detail = failed_detail(&r.outcome);
+        assert!(detail.starts_with("wasm 読込失敗"), "detail={detail:?}");
+        assert_eq!(r.fuel_used, None);
+    }
+
+    #[test]
+    fn fuel_used_never_exceeds_fuel() {
+        let wat = br#"(module (func (export "_start") (loop br 0)))"#;
+        let r = run_bytes(wat, 10_000, ONE_MB);
+        assert!(matches!(r.outcome, StageOutcome::TimedOut { .. }));
+        assert!(r.fuel_used.is_some_and(|u| u > 0 && u <= 10_000));
+    }
 }
