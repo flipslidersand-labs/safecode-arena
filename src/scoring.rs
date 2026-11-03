@@ -143,6 +143,18 @@ pub fn assign_reasoning(eval: &mut Evaluation, llm_score: f64, rubric: &Rubric) 
 /// compile か test が通っていない候補は performance 0。
 /// 付与後、各 `score` を `axes.total()` で再計算する。
 pub fn assign_performance(evals: &mut [Evaluation], rubric: &Rubric) {
+    let rubrics = vec![*rubric; evals.len()];
+    assign_performance_each(evals, &rubrics);
+}
+
+/// `assign_performance` の候補ごと rubric 版。`rubrics[i]` が `evals[i]` の performance 配点。
+/// 相対比較（最速との比）は全候補で行い、比率に候補ごとの `rubric.performance` を掛ける。
+pub fn assign_performance_each(evals: &mut [Evaluation], rubrics: &[Rubric]) {
+    assert_eq!(
+        evals.len(),
+        rubrics.len(),
+        "evals と rubrics の長さが不一致"
+    );
     // bench_ns が 1 件でもあれば全候補で bench_ns を優先する。
     // bench_ns がない候補は 0 扱い（最遅）ではなく None 扱い（採点対象外）。
     let has_any_bench = evals.iter().any(|e| e.bench_ns.is_some());
@@ -167,7 +179,7 @@ pub fn assign_performance(evals: &mut [Evaluation], rubric: &Rubric) {
 
     let fastest = times.iter().flatten().copied().min();
 
-    for (e, time) in evals.iter_mut().zip(times.iter()) {
+    for ((e, time), rubric) in evals.iter_mut().zip(times.iter()).zip(rubrics) {
         let ratio = match (time, fastest) {
             (Some(t), Some(min)) if *t > 0 => min as f64 / *t as f64,
             (Some(_), Some(_)) => 1.0, // 0ns/ms は満点扱い
@@ -592,5 +604,57 @@ mod tests {
         assert_eq!(evals[0].axes.performance, 0.0);
         // ok が唯一の採点対象なので満点
         assert_eq!(evals[1].axes.performance, r.performance);
+    }
+
+    fn perf_eval(ms: u64) -> Evaluation {
+        Evaluation {
+            candidate_id: "c".into(),
+            compile: passed(ms),
+            test: passed(0),
+            lint: StageOutcome::Skipped,
+            lint_warnings: 0,
+            prop_test: StageOutcome::Skipped,
+            wasm: StageOutcome::Skipped,
+            wasm_fuel_used: None,
+            mutation: StageOutcome::Skipped,
+            mutation_caught: 0,
+            mutation_total: 0,
+            audit_findings: 0,
+            bench_ns: None,
+            reasoning: StageOutcome::Skipped,
+            reasoning_score: 0.0,
+            reasoning_comment: None,
+            axes: AxisScores::default(),
+            score: 0.0,
+        }
+    }
+
+    #[test]
+    fn performance_each_uses_per_candidate_weight() {
+        let mk = perf_eval;
+        let mut evals = vec![mk(10), mk(20)];
+        let a = Rubric {
+            performance: 30.0,
+            ..Rubric::default()
+        };
+        let b = Rubric {
+            performance: 10.0,
+            ..Rubric::default()
+        };
+        assign_performance_each(&mut evals, &[a, b]);
+        assert_eq!(evals[0].axes.performance, 30.0);
+        assert_eq!(evals[1].axes.performance, 5.0); // 10 * (10/20)
+    }
+
+    #[test]
+    fn performance_single_rubric_matches_each() {
+        let mk = perf_eval;
+        let r = Rubric::default();
+        let mut x = vec![mk(10), mk(40)];
+        let mut y = vec![mk(10), mk(40)];
+        assign_performance(&mut x, &r);
+        assign_performance_each(&mut y, &[r, r]);
+        assert_eq!(x[1].axes.performance, y[1].axes.performance);
+        assert_eq!(x[1].score, y[1].score);
     }
 }
