@@ -211,10 +211,16 @@ fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
     for candidate in &candidates {
         eprintln!("評価中: {} ...", candidate.id);
         let rubric = config.rubric_for(candidate.language.name());
-        evals.push(pipeline::evaluate_candidate(
-            candidate, timeout, &rubric, &eval_opts,
-        )?);
-        rubrics.push(rubric);
+        if let Some(eval) = keep_evaluated(
+            &candidate.id,
+            pipeline::evaluate_candidate(candidate, timeout, &rubric, &eval_opts),
+        ) {
+            evals.push(eval);
+            rubrics.push(rubric);
+        }
+    }
+    if evals.is_empty() {
+        anyhow::bail!("全候補の評価に失敗しました");
     }
 
     scoring::assign_performance_each(&mut evals, &rubrics);
@@ -270,6 +276,17 @@ fn persist_and_report_regressions(
     let run_id = s.save_run(&created_at, ranked)?;
     eprintln!("run #{run_id} を保存しました: {db_path}");
     Ok(has_regression)
+}
+
+/// 1 候補の評価エラーで全体を止めない。Err は候補 ID 付きで警告して `None` を返す。
+fn keep_evaluated<T>(id: &str, result: anyhow::Result<T>) -> Option<T> {
+    match result {
+        Ok(v) => Some(v),
+        Err(e) => {
+            eprintln!("[warn] {id} の評価失敗: {e:#}");
+            None
+        }
+    }
 }
 
 fn render_and_write(
@@ -330,15 +347,15 @@ fn run_generate(
             source: source.clone(),
             language: Language::Rust,
         };
-        match pipeline::evaluate_candidate(
-            &candidate,
-            timeout,
-            &rubric,
-            &pipeline::EvalOptions::default(),
-        ) {
-            Ok(eval) => evals.push(eval),
-            Err(e) => eprintln!("[warn] {} の評価失敗: {e}", candidate.id),
-        }
+        evals.extend(keep_evaluated(
+            &candidate.id,
+            pipeline::evaluate_candidate(
+                &candidate,
+                timeout,
+                &rubric,
+                &pipeline::EvalOptions::default(),
+            ),
+        ));
     }
 
     if evals.is_empty() {
@@ -377,4 +394,15 @@ fn run_history(db_path: &str) -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::keep_evaluated;
+
+    #[test]
+    fn keep_evaluated_passes_ok_and_drops_err() {
+        assert_eq!(keep_evaluated("a", Ok(1)), Some(1));
+        assert_eq!(keep_evaluated::<i32>("b", Err(anyhow::anyhow!("io"))), None);
+    }
 }
