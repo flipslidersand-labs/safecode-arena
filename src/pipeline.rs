@@ -203,7 +203,7 @@ fn run_wasm_stage(
         .join(WASM_TARGET)
         .join("release")
         .join("candidate.wasm");
-    let wo = wasm::run_wasm(&artifact, opts.fuel, opts.max_memory_bytes);
+    let wo = wasm::run_wasm(&artifact, opts.fuel, opts.max_memory_bytes, timeout);
     (wo.outcome, wo.fuel_used)
 }
 
