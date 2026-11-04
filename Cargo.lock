@@ -1660,6 +1660,7 @@ dependencies = [
  "assert_cmd",
  "chrono",
  "clap",
+ "libc",
  "predicates",
  "rusqlite",
  "serde",

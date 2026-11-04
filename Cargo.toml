@@ -27,6 +27,8 @@ thiserror = "2"
 tempfile = "3"
 # 子プロセスのタイムアウト kill
 wait-timeout = "0.2"
+# タイムアウト時のプロセスグループ kill（killpg）。既に lock に入っている推移依存
+libc = "0.2"
 # タイムスタンプ（レポート生成）
 chrono = { version = "0.4", features = ["serde"] }
 # 評価結果の永続化（run 履歴・リグレッション検出）。bundled で system sqlite 非依存。
