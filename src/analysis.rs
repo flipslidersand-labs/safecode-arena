@@ -40,7 +40,7 @@ impl SourceMetrics {
     }
 
     /// maintainability 達成率:
-    /// - 関数あたり平均行数が 30 を超えた分だけ徐々に減点（100 行で 0）
+    /// - 関数あたり平均行数が 30 を超えた分だけ徐々に減点（超過 1 行につき 0.01、平均 130 行で 0）
     /// - 120 字を超える行があれば 0.1 減点
     pub fn maintainability_ratio(&self) -> f64 {
         let avg_fn_len = self.loc as f64 / self.fn_count.max(1) as f64;
@@ -297,7 +297,7 @@ mod tests {
 
     #[test]
     fn maintainability_clamps_to_zero_at_130_lines() {
-        // 実装上は 130 行で 0（doc コメントの「100 行で 0」とは異なる）。
+        // 30 行を超えた分を 100 行で打ち切るので、平均 130 行で 0。
         assert!(approx(metrics(100, 1, 0).maintainability_ratio(), 0.3));
         assert!(approx(metrics(130, 1, 0).maintainability_ratio(), 0.0));
         assert_eq!(metrics(10_000, 1, 200).maintainability_ratio(), 0.0);
