@@ -361,6 +361,18 @@ fn assemble(candidate: &Candidate, r: StageResults, rubric: &Rubric) -> Evaluati
     }
 }
 
+/// Rust 候補の compile ステージで使う `cargo` 引数。
+///
+/// ベンチ候補は `benches/bench.rs` に置かれ、既定の `cargo build`/`test`/`clippy` は
+/// bench ターゲットをビルドしないため、`--benches` を付けて候補本体を検査する (#171)。
+fn rust_build_args(is_bench: bool) -> &'static [&'static str] {
+    if is_bench {
+        &["build", "--benches"]
+    } else {
+        &["build"]
+    }
+}
+
 /// Rust 候補: 一時 Cargo プロジェクトで compile → test → lint(clippy) → prop_test → wasm → mutation。
 fn run_rust_stages(
     root: &Path,
@@ -396,7 +408,7 @@ fn run_rust_stages(
     }
 
     let mut build = Command::new("cargo");
-    build.arg("build").current_dir(root);
+    build.args(rust_build_args(is_bench)).current_dir(root);
     let compile = runner::run_stage("compile", build, timeout);
     if !compile.is_passed() {
         return Ok(StageResults::skipped_after_compile(compile));
@@ -1196,6 +1208,14 @@ criterion_group!(benches, bench);
 criterion_main!(benches);"#;
         assert!(has_bench(src));
         assert!(!has_bench("fn regular() {}"));
+    }
+
+    #[test]
+    fn rust_build_args_builds_benches_only_for_bench_candidates() {
+        // ベンチ候補は benches/bench.rs に置かれ、既定の cargo build では検査されない (#171)。
+        assert_eq!(rust_build_args(true), ["build", "--benches"]);
+        // 通常の lib 候補のコマンドは変えない。
+        assert_eq!(rust_build_args(false), ["build"]);
     }
 }
 
