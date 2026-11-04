@@ -296,7 +296,8 @@ fn write_js(name: &str, source: &str) -> tempfile::NamedTempFile {
 
 #[test]
 fn js_clean_candidate_scores() {
-    // 構文 OK・テスト関数なし（node --test は ファイル実行成功で exit 0）。
+    // 構文 OK・テストファイルなし。candidate.js 自体は node --test に渡さない（#159）ので
+    // test は Skipped となり、満点にはならない（compile のみで 50.0）。
     let cand = write_js(
         "ok",
         "function add(a, b) { return a + b; }\nmodule.exports = { add };\n",
@@ -308,7 +309,7 @@ fn js_clean_candidate_scores() {
         .arg(cand.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("85.0"))
+        .stdout(predicate::str::contains("50.0"))
         .stdout(predicate::str::contains("✅"));
 }
 

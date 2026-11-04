@@ -822,6 +822,19 @@ fn parse_gremlins_json(content: &str) -> Option<(usize, usize)> {
         .map(|g| (g.mutants_killed, g.mutants_total))
 }
 
+/// JS のテストコマンドを決める。`*.test.js` が無ければ `None`（test は Skipped）。
+/// candidate.js 自体は `node --test` に渡さない（top-level 副作用で誤判定するため, #159）。
+fn js_test_command(root: &Path) -> Option<&'static str> {
+    let has_tests = root
+        .read_dir()
+        .map(|rd| {
+            rd.flatten()
+                .any(|e| e.file_name().to_string_lossy().ends_with(".test.js"))
+        })
+        .unwrap_or(false);
+    has_tests.then_some("node --test *.test.js 1>&2")
+}
+
 /// JavaScript 候補: node --check（構文検証）→ node --test → ESLint（あれば）。
 /// prop_test / wasm は非対応のため Skipped。
 fn run_js_stages(
@@ -843,12 +856,15 @@ fn run_js_stages(
         return Ok(StageResults::skipped_after_compile(compile));
     }
 
-    // test: Node 組込みランナー（18+）で candidate.js + *.test.js を実行。
-    let mut t = Command::new("sh");
-    t.arg("-c")
-        .arg(r#"node --test candidate.js $(ls *.test.js 2>/dev/null) 1>&2"#)
-        .current_dir(root);
-    let test = runner::run_stage("test", t, timeout);
+    // test: Node 組込みランナー（18+）で *.test.js のみ実行。無ければ Skipped。
+    let test = match js_test_command(root) {
+        Some(cmd) => {
+            let mut t = Command::new("sh");
+            t.arg("-c").arg(cmd).current_dir(root);
+            runner::run_stage("test", t, timeout)
+        }
+        None => StageOutcome::Skipped,
+    };
 
     // lint: ESLint があれば --no-eslintrc + 最小ルールで実行
     let (lint, lint_warnings) = if eslint_available() {
@@ -1738,5 +1754,28 @@ mod lint_run_failed_tests {
             "go: downloading example.com/x v1.0.0\n"
         ));
         assert!(!go_lint_run_failed(""));
+    }
+}
+
+#[cfg(test)]
+mod js_test_command_tests {
+    use super::*;
+
+    #[test]
+    fn no_test_files_returns_none() {
+        let d = tempfile::tempdir().unwrap();
+        fs::write(d.path().join("candidate.js"), "module.exports = 1;").unwrap();
+        assert!(js_test_command(d.path()).is_none());
+    }
+
+    #[test]
+    fn with_test_file_runs_only_test_files() {
+        let d = tempfile::tempdir().unwrap();
+        fs::write(d.path().join("candidate.js"), "module.exports = 1;").unwrap();
+        fs::write(d.path().join("a.test.js"), "").unwrap();
+        let cmd = js_test_command(d.path()).expect("test file exists");
+        assert!(cmd.contains("--test"));
+        assert!(!cmd.contains("candidate.js"));
+        assert!(cmd.contains("*.test.js"));
     }
 }
