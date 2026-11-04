@@ -14,6 +14,7 @@ permissions:
 jobs:
   ignored-tests:
     runs-on: ${{ vars.GATE_RUNNER }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -30,7 +31,10 @@ jobs:
           targets: wasm32-wasip1
 
       - name: Install pytest and ruff
-        run: python3 -m pip install --user pytest ruff && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install pytest==9.2.0 ruff==0.17.3
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
 
       - name: Cache cargo registry and target
         uses: actions/cache@v4
