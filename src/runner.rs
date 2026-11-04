@@ -26,6 +26,20 @@ fn summarize(file: std::fs::File) -> String {
         .join("\n")
 }
 
+/// 子プロセスをプロセスグループごと SIGKILL して回収する。
+///
+/// 子は `process_group(0)` で自身がグループリーダー（pgid == pid）になっている。
+fn kill_group(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    // SAFETY: killpg は引数が整数のみの単純なシステムコール。
+    unsafe {
+        libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);
+    }
+    // 非 unix、または killpg が失敗した場合の保険（直接の子だけでも止める）。
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// プロセスをタイムアウト付きで実行し、ステージ結果と stderr を返す。
 ///
 /// [`run_stage`] と同じ動作だが、呼び出し元が stderr を検査できるよう
@@ -74,6 +88,10 @@ pub fn run_stage_capture(
     cmd.stdout(Stdio::from(out_for_child))
         .stderr(Stdio::from(err_for_child));
 
+    // 孫プロセスごと止められるよう、子を新しいプロセスグループのリーダーにする。
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+
     let start = Instant::now();
     let mut child = match cmd.spawn() {
         Ok(c) => c,
@@ -105,15 +123,17 @@ pub fn run_stage_capture(
             }
         }
         Ok(None) => {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_group(&mut child);
             StageOutcome::TimedOut {
                 limit_ms: limit.as_millis() as u64,
             }
         }
-        Err(e) => StageOutcome::Failed {
-            detail: format!("{label}: 待機失敗: {e}"),
-        },
+        Err(e) => {
+            kill_group(&mut child);
+            StageOutcome::Failed {
+                detail: format!("{label}: 待機失敗: {e}"),
+            }
+        }
     };
 
     let captured = read_all(err_file);
@@ -140,6 +160,57 @@ mod tests {
         cmd.arg("10");
         let outcome = run_stage("sleep", cmd, Duration::from_millis(300));
         assert!(matches!(outcome, StageOutcome::TimedOut { .. }));
+    }
+
+    /// /proc/<pid> が存在し、ゾンビでなければ生存とみなす。
+    #[cfg(target_os = "linux")]
+    fn pid_alive(pid: i32) -> bool {
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(s) => !s
+                .rsplit(')')
+                .next()
+                .unwrap_or("")
+                .trim_start()
+                .starts_with('Z'),
+            Err(_) => false,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn timeout_kills_grandchild_process_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("grandchild.pid");
+        let mut cmd = Command::new("sh");
+        // 孫（一意な引数の sleep）をバックグラウンドで起動し、PID を書いて待つ。
+        cmd.arg("-c")
+            .arg("sleep 30.162 & echo $! > \"$1\"; wait")
+            .arg("sh")
+            .arg(&pid_file);
+        let outcome = run_stage("grandchild", cmd, Duration::from_millis(800));
+        assert!(matches!(outcome, StageOutcome::TimedOut { .. }));
+
+        let pid: i32 = std::fs::read_to_string(&pid_file)
+            .expect("孫の PID ファイル")
+            .trim()
+            .parse()
+            .unwrap();
+        // SIGKILL 後の回収を最大 3 秒待つ。
+        let mut alive = true;
+        for _ in 0..30 {
+            alive = pid_alive(pid);
+            if !alive {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        if alive {
+            // 後始末（テスト失敗時に孫を残さない）
+            let _ = Command::new("kill")
+                .args(["-KILL", &pid.to_string()])
+                .status();
+        }
+        assert!(!alive, "孫プロセス {pid} がタイムアウト後も残っている");
     }
 
     #[test]
