@@ -56,6 +56,40 @@ fn evaluate_broken_candidate_skips_test_and_scores_zero() {
 }
 
 #[test]
+#[ignore = "criterion の取得・ビルドが必要。CI は ignored-tests.yml が --ignored で実行する (#171)"]
+fn evaluate_broken_criterion_bench_candidate_fails_compile() {
+    // Criterion 候補は benches/bench.rs に置かれる。構文エラーでも compile/test が
+    // Passed になっていた回帰を防ぐ (#171)。
+    let cand = write_candidate(
+        "broken_bench",
+        "use criterion::{criterion_group, criterion_main, Criterion};\n\
+         fn b(c: &mut Criterion) { c.bench_function(\"x\", |b| b.iter(|| 1 + 1)); }\n\
+         criterion_group!(benches, b);\n\
+         criterion_main!(benches);\n\
+         fn broken(\n",
+    );
+
+    let out = Command::cargo_bin("safecode")
+        .unwrap()
+        .args(["evaluate", "--format", "json"])
+        .arg(cand.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let e = &v[0];
+    assert!(
+        e["compile"].get("Failed").is_some(),
+        "compile: {}",
+        e["compile"]
+    );
+    assert_eq!(e["test"], "Skipped");
+    assert_eq!(e["score"], 0.0);
+}
+
+#[test]
 fn evaluate_without_candidates_fails() {
     Command::cargo_bin("safecode")
         .unwrap()
