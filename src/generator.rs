@@ -88,7 +88,13 @@ pub fn parse_candidates(output: &str) -> Vec<String> {
             if tag.trim() != "rust" {
                 return None;
             }
-            let end = rest.find("```")?;
+            // 閉じフェンスは行頭の ``` のみ（doc コメント内 `/// ```` は無視。#160）。
+            // rest は開きフェンス行の次行から始まるので、先頭が ``` の場合（空コード）も拾う。
+            let end = if rest.starts_with("```") {
+                0
+            } else {
+                rest.find("\n```")? + 1
+            };
             let code = rest[..end].trim().to_string();
             if code.is_empty() {
                 None
@@ -272,6 +278,34 @@ pub fn add(a: i32, b: i32) -> i32 { b + a }
         assert_eq!(
             parse_candidates(&out),
             vec!["fn a() {}".to_string(), "fn c() {}".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_candidates_keeps_doc_comment_fences() {
+        // doc コメント内の ``` は閉じフェンスではない（#160）。
+        let code =
+            "/// ```\n/// add(1, 2);\n/// ```\npub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}";
+        let out = format!("```rust\n{code}\n```");
+        assert_eq!(parse_candidates(&out), vec![code.to_string()]);
+        // 複数候補でも各々丸ごと取れる。CRLF でも閉じられる。
+        let code2 = "//! ```\n//! x();\n//! ```\npub fn g() {}";
+        let out = format!("{}{}", block(code), block(code2)).replace('\n', "\r\n");
+        let got = parse_candidates(&out);
+        assert_eq!(got.len(), 2);
+        assert!(got[0].ends_with('}') && got[1].ends_with("pub fn g() {}"));
+    }
+
+    #[test]
+    fn parse_candidates_fence_edge_cases() {
+        // 空コード（開き直後に閉じ）は None。
+        assert!(parse_candidates("```rust\n```").is_empty());
+        // 閉じフェンスが行頭に無い（doc コメント内のみ）なら None。
+        assert!(parse_candidates("```rust\n/// ```\npub fn f() {}\n").is_empty());
+        // 閉じフェンスの後ろに文字が続いても行頭 ``` なら閉じとみなす。
+        assert_eq!(
+            parse_candidates("```rust\nfn a() {}\n```text\n"),
+            vec!["fn a() {}".to_string()]
         );
     }
 
