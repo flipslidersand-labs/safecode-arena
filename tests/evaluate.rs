@@ -424,3 +424,27 @@ fn ts_type_error_fails_compile() {
         "expected ❌ or 0.0 for type error, got: {out}"
     );
 }
+
+#[test]
+fn evaluate_all_candidates_erroring_warns_with_id_and_fails() {
+    // TMPDIR を存在しないパスにすると evaluate_candidate が一時ディレクトリ生成で Err を返す(#168)。
+    // 1 候補ごとに ID 付きで警告して続行し、全滅なら非 0 終了する。
+    let work = tempfile::tempdir().unwrap();
+    let a = work.path().join("cand_a.rs");
+    let b = work.path().join("cand_b.rs");
+    std::fs::write(&a, "pub fn f() {}\n").unwrap();
+    std::fs::write(&b, "pub fn g() {}\n").unwrap();
+    let missing_tmp = work.path().join("no-such-tmp");
+
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .env("TMPDIR", &missing_tmp)
+        .arg("evaluate")
+        .arg(&a)
+        .arg(&b)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("[warn] cand_a の評価失敗"))
+        .stderr(predicate::str::contains("[warn] cand_b の評価失敗"))
+        .stderr(predicate::str::contains("全候補の評価に失敗しました"));
+}
