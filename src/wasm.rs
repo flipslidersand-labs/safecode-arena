@@ -8,7 +8,7 @@
 
 use crate::model::StageOutcome;
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, Trap};
 use wasmtime_wasi::p1::{self, WasiP1Ctx};
 use wasmtime_wasi::{I32Exit, WasiCtxBuilder};
@@ -37,23 +37,57 @@ struct Host {
 }
 
 /// `.wasm` ファイルを fuel/メモリ制限付きで実行する。
-pub fn run_wasm(wasm_path: &Path, fuel: u64, max_memory_bytes: usize) -> WasmOutcome {
+pub fn run_wasm(
+    wasm_path: &Path,
+    fuel: u64,
+    max_memory_bytes: usize,
+    timeout: Duration,
+) -> WasmOutcome {
     match std::fs::read(wasm_path) {
-        Ok(bytes) => run_bytes(&bytes, fuel, max_memory_bytes),
+        Ok(bytes) => run_bytes(&bytes, fuel, max_memory_bytes, timeout),
         Err(e) => WasmOutcome::failed(format!("wasm 読込失敗: {e}")),
     }
 }
 
 /// wasm バイナリ（または wat テキスト）を実行する中核。
 /// `_start`（WASI command）を呼び、結果を `StageOutcome` に分類する。
-fn run_bytes(bytes: &[u8], fuel: u64, max_memory_bytes: usize) -> WasmOutcome {
+fn run_bytes(bytes: &[u8], fuel: u64, max_memory_bytes: usize, timeout: Duration) -> WasmOutcome {
     let mut config = Config::new();
     config.consume_fuel(true);
+    config.epoch_interruption(true);
     let engine = match Engine::new(&config) {
         Ok(e) => e,
         Err(e) => return WasmOutcome::failed(format!("engine 生成失敗: {e}")),
     };
-    let module = match Module::new(&engine, bytes) {
+    // ホスト側でブロックする呼び出し（poll_oneoff の sleep 等）は epoch では中断できない
+    // （実測済み）。実行は別スレッドで行い、呼び出し側は recv_timeout で壁時計上限を守る。
+    // タイムアウト後は epoch を進め、ゲストコードが再開した時点で必ず trap させる
+    // （無限ループは fuel / epoch で止まる）。ブロック中のスレッドはホスト呼び出しが
+    // 返るまで残るが、結果は破棄され、CLI は呼び出し側で先に進む。
+    let (tx, rx) = std::sync::mpsc::channel();
+    let bytes = bytes.to_vec();
+    let worker_engine = engine.clone();
+    let t0 = Instant::now();
+    std::thread::spawn(move || {
+        let _ = tx.send(execute(&worker_engine, &bytes, fuel, max_memory_bytes));
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(o) => o,
+        Err(_) => {
+            engine.increment_epoch();
+            WasmOutcome {
+                outcome: StageOutcome::TimedOut {
+                    limit_ms: t0.elapsed().as_millis() as u64,
+                },
+                fuel_used: None,
+            }
+        }
+    }
+}
+
+/// エンジン上でモジュールをロード・実行する（ワーカースレッド内で呼ぶ）。
+fn execute(engine: &Engine, bytes: &[u8], fuel: u64, max_memory_bytes: usize) -> WasmOutcome {
+    let module = match Module::new(engine, bytes) {
         Ok(m) => m,
         Err(e) => return WasmOutcome::failed(format!("module ロード失敗: {e}")),
     };
@@ -63,13 +97,13 @@ fn run_bytes(bytes: &[u8], fuel: u64, max_memory_bytes: usize) -> WasmOutcome {
     let limits = StoreLimitsBuilder::new()
         .memory_size(max_memory_bytes)
         .build();
-    let mut store = Store::new(&engine, Host { wasi, limits });
+    let mut store = Store::new(engine, Host { wasi, limits });
     store.limiter(|h| &mut h.limits);
     if let Err(e) = store.set_fuel(fuel) {
         return WasmOutcome::failed(format!("fuel 設定失敗: {e}"));
     }
 
-    let mut linker: Linker<Host> = Linker::new(&engine);
+    let mut linker: Linker<Host> = Linker::new(engine);
     if let Err(e) = p1::add_to_linker_sync(&mut linker, |h: &mut Host| &mut h.wasi) {
         return WasmOutcome::failed(format!("WASI link 失敗: {e}"));
     }
@@ -83,6 +117,7 @@ fn run_bytes(bytes: &[u8], fuel: u64, max_memory_bytes: usize) -> WasmOutcome {
         Err(_) => return WasmOutcome::failed("_start エクスポートがありません"),
     };
 
+    store.set_epoch_deadline(1);
     let t0 = Instant::now();
     let result = start.call(&mut store, ());
     let elapsed_ms = t0.elapsed().as_millis() as u64;
@@ -139,12 +174,13 @@ mod tests {
     use super::*;
 
     const ONE_MB: usize = 1024 * 1024;
+    const T: Duration = Duration::from_secs(10);
 
     #[test]
     fn empty_start_passes() {
         // 何もしない _start。
         let wat = br#"(module (func (export "_start")))"#;
-        let r = run_bytes(wat, 100_000, ONE_MB);
+        let r = run_bytes(wat, 100_000, ONE_MB, T);
         assert!(r.outcome.is_passed(), "outcome={:?}", r.outcome);
         assert!(r.fuel_used.is_some());
     }
@@ -153,7 +189,7 @@ mod tests {
     fn infinite_loop_exhausts_fuel() {
         // 無限ループ → fuel 枯渇で TimedOut。
         let wat = br#"(module (func (export "_start") (loop br 0)))"#;
-        let r = run_bytes(wat, 10_000, ONE_MB);
+        let r = run_bytes(wat, 10_000, ONE_MB, T);
         assert!(
             matches!(r.outcome, StageOutcome::TimedOut { .. }),
             "outcome={:?}",
@@ -164,7 +200,7 @@ mod tests {
     #[test]
     fn missing_start_fails() {
         let wat = br#"(module (func (export "other")))"#;
-        let r = run_bytes(wat, 10_000, ONE_MB);
+        let r = run_bytes(wat, 10_000, ONE_MB, T);
         assert!(matches!(r.outcome, StageOutcome::Failed { .. }));
     }
 
@@ -187,14 +223,14 @@ mod tests {
 
     #[test]
     fn proc_exit_zero_passes() {
-        let r = run_bytes(exit_wat(0).as_bytes(), 100_000, ONE_MB);
+        let r = run_bytes(exit_wat(0).as_bytes(), 100_000, ONE_MB, T);
         assert!(r.outcome.is_passed(), "outcome={:?}", r.outcome);
         assert!(r.fuel_used.is_some_and(|u| u <= 100_000));
     }
 
     #[test]
     fn proc_exit_nonzero_reports_exit_code() {
-        let r = run_bytes(exit_wat(3).as_bytes(), 100_000, ONE_MB);
+        let r = run_bytes(exit_wat(3).as_bytes(), 100_000, ONE_MB, T);
         assert_eq!(failed_detail(&r.outcome), "exit code 3");
         assert!(r.fuel_used.is_some_and(|u| u <= 100_000));
     }
@@ -202,7 +238,7 @@ mod tests {
     #[test]
     fn unreachable_trap_keeps_trap_cause() {
         let wat = br#"(module (func (export "_start") unreachable))"#;
-        let r = run_bytes(wat, 100_000, ONE_MB);
+        let r = run_bytes(wat, 100_000, ONE_MB, T);
         let detail = failed_detail(&r.outcome);
         assert!(detail.contains("unreachable"), "detail={detail:?}");
         assert!(r.fuel_used.is_some_and(|u| u <= 100_000));
@@ -212,7 +248,7 @@ mod tests {
     fn initial_memory_over_limit_fails_instantiate() {
         // 100 page = 6.4MB > 1MB 上限。
         let wat = br#"(module (memory 100) (func (export "_start")))"#;
-        let r = run_bytes(wat, 100_000, ONE_MB);
+        let r = run_bytes(wat, 100_000, ONE_MB, T);
         let detail = failed_detail(&r.outcome);
         assert!(detail.starts_with("instantiate 失敗"), "detail={detail:?}");
         assert_eq!(r.fuel_used, None);
@@ -222,13 +258,13 @@ mod tests {
     fn initial_memory_within_limit_passes() {
         // 1 page = 64KiB < 1MB。上限判定が過剰でないことの対照。
         let wat = br#"(module (memory 1) (func (export "_start")))"#;
-        let r = run_bytes(wat, 100_000, ONE_MB);
+        let r = run_bytes(wat, 100_000, ONE_MB, T);
         assert!(r.outcome.is_passed(), "outcome={:?}", r.outcome);
     }
 
     #[test]
     fn invalid_bytes_fail_module_load() {
-        let r = run_bytes(b"\0bad", 100_000, ONE_MB);
+        let r = run_bytes(b"\0bad", 100_000, ONE_MB, T);
         let detail = failed_detail(&r.outcome);
         assert!(detail.starts_with("module ロード失敗"), "detail={detail:?}");
         assert_eq!(r.fuel_used, None);
@@ -237,16 +273,67 @@ mod tests {
     #[test]
     fn nonexistent_path_fails_read() {
         let p = Path::new("/nonexistent/safecode-arena/no-such.wasm");
-        let r = run_wasm(p, 100_000, ONE_MB);
+        let r = run_wasm(p, 100_000, ONE_MB, T);
         let detail = failed_detail(&r.outcome);
         assert!(detail.starts_with("wasm 読込失敗"), "detail={detail:?}");
         assert_eq!(r.fuel_used, None);
     }
 
+    /// poll_oneoff で `sleep_ns` だけ単調クロック待ちする WAT。
+    fn sleep_wat(sleep_ns: u64) -> String {
+        format!(
+            r#"(module
+                (import "wasi_snapshot_preview1" "poll_oneoff"
+                    (func $poll (param i32 i32 i32 i32) (result i32)))
+                (memory (export "memory") 1)
+                (func (export "_start")
+                    (i32.store (i32.const 16) (i32.const 1))
+                    (i64.store (i32.const 24) (i64.const {sleep_ns}))
+                    (drop (call $poll (i32.const 0) (i32.const 104) (i32.const 1) (i32.const 208)))))"#
+        )
+    }
+
+    #[test]
+    fn blocking_sleep_times_out() {
+        // 5 秒 sleep を 200ms timeout で止められるか（安全弁: 別スレッド + 30s 上限）。
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let t0 = Instant::now();
+            let r = run_bytes(
+                sleep_wat(5_000_000_000).as_bytes(),
+                100_000,
+                ONE_MB,
+                Duration::from_millis(200),
+            );
+            let _ = tx.send((r.outcome, t0.elapsed()));
+        });
+        let (outcome, el) = rx.recv_timeout(Duration::from_secs(30)).expect("ハング");
+        eprintln!("elapsed={el:?} outcome={outcome:?}");
+        assert!(
+            matches!(outcome, StageOutcome::TimedOut { .. }),
+            "{outcome:?}"
+        );
+        assert!(el < Duration::from_secs(2), "elapsed={el:?}");
+    }
+
+    #[test]
+    fn busy_loop_with_huge_fuel_times_out() {
+        // fuel が実質無制限でも壁時計で TimedOut になる（epoch でワーカーも止まる）。
+        let wat = br#"(module (func (export "_start") (loop br 0)))"#;
+        let t0 = Instant::now();
+        let r = run_bytes(wat, u64::MAX, ONE_MB, Duration::from_millis(200));
+        assert!(
+            matches!(r.outcome, StageOutcome::TimedOut { .. }),
+            "{:?}",
+            r.outcome
+        );
+        assert!(t0.elapsed() < Duration::from_secs(5));
+    }
+
     #[test]
     fn fuel_used_never_exceeds_fuel() {
         let wat = br#"(module (func (export "_start") (loop br 0)))"#;
-        let r = run_bytes(wat, 10_000, ONE_MB);
+        let r = run_bytes(wat, 10_000, ONE_MB, T);
         assert!(matches!(r.outcome, StageOutcome::TimedOut { .. }));
         assert!(r.fuel_used.is_some_and(|u| u > 0 && u <= 10_000));
     }
