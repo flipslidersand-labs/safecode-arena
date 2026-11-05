@@ -90,13 +90,32 @@ impl Store {
              CREATE INDEX IF NOT EXISTS idx_eval_run ON evaluations(run_id);",
         )
         .context("スキーマ初期化に失敗")?;
+        // #191: 実行条件の列。旧スキーマの DB には列を足す（既存行は NULL）。
+        let has_options: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM pragma_table_info('runs') WHERE name = 'options'",
+            [],
+            |r| r.get(0),
+        )?;
+        if !has_options {
+            conn.execute("ALTER TABLE runs ADD COLUMN options TEXT", [])
+                .context("runs.options 列の追加に失敗")?;
+        }
         Ok(Store { conn })
     }
 
     /// 1 つの run を保存し、その run_id を返す。
-    pub fn save_run(&mut self, created_at: &str, evals: &[Evaluation]) -> Result<i64> {
+    /// `options` はスコアに影響する実行条件（`--llm-review` 等）を正規化した文字列。
+    pub fn save_run(
+        &mut self,
+        created_at: &str,
+        options: &str,
+        evals: &[Evaluation],
+    ) -> Result<i64> {
         let tx = self.conn.transaction()?;
-        tx.execute("INSERT INTO runs (created_at) VALUES (?1)", [created_at])?;
+        tx.execute(
+            "INSERT INTO runs (created_at, options) VALUES (?1, ?2)",
+            [created_at, options],
+        )?;
         let run_id = tx.last_insert_rowid();
         for e in evals {
             let detail = serde_json::to_string(e)?;
@@ -115,6 +134,18 @@ impl Store {
         let id = self.conn.query_row("SELECT MAX(id) FROM runs", [], |r| {
             r.get::<_, Option<i64>>(0)
         })?;
+        Ok(id)
+    }
+
+    /// 実行条件が `options` と同じ最新の run_id（比較の基準）。
+    /// 列追加前の旧 run（options が NULL）は条件不明だが互換として扱う
+    /// （既存 DB の基準を失って回帰検出が空白になるのを避ける）。
+    pub fn latest_run_id_matching(&self, options: &str) -> Result<Option<i64>> {
+        let id = self.conn.query_row(
+            "SELECT MAX(id) FROM runs WHERE options = ?1 OR options IS NULL",
+            [options],
+            |r| r.get::<_, Option<i64>>(0),
+        )?;
         Ok(id)
     }
 
@@ -262,7 +293,11 @@ mod tests {
         assert_eq!(s.latest_run_id().unwrap(), None);
 
         let run_id = s
-            .save_run("2026-06-22 00:00:00", &[eval("a", 80.0), eval("b", 60.0)])
+            .save_run(
+                "2026-06-22 00:00:00",
+                "",
+                &[eval("a", 80.0), eval("b", 60.0)],
+            )
             .unwrap();
         assert_eq!(s.latest_run_id().unwrap(), Some(run_id));
 
@@ -274,7 +309,7 @@ mod tests {
     #[test]
     fn list_runs_reports_best_candidate() {
         let mut s = Store::open_in_memory().unwrap();
-        s.save_run("t1", &[eval("a", 80.0), eval("b", 90.0)])
+        s.save_run("t1", "", &[eval("a", 80.0), eval("b", 90.0)])
             .unwrap();
         let runs = s.list_runs().unwrap();
         assert_eq!(runs.len(), 1);
@@ -309,7 +344,7 @@ mod tests {
     fn performance_drop_alone_is_not_regression() {
         // 前 run: performance 20 / 今 run: 速い候補が増えて performance 5
         let mut s = Store::open_in_memory().unwrap();
-        let run = s.save_run("t", &[eval_axes("a", 60.0, 20.0)]).unwrap();
+        let run = s.save_run("t", "", &[eval_axes("a", 60.0, 20.0)]).unwrap();
         let prev = s.run_comparable_scores(run).unwrap();
         let curr = vec![eval_axes("a", 60.0, 5.0)];
         assert!(find_regressions(&prev, &curr, 1.0).is_empty());
@@ -318,7 +353,7 @@ mod tests {
     #[test]
     fn correctness_drop_is_regression_even_if_performance_rises() {
         let mut s = Store::open_in_memory().unwrap();
-        let run = s.save_run("t", &[eval_axes("a", 60.0, 5.0)]).unwrap();
+        let run = s.save_run("t", "", &[eval_axes("a", 60.0, 5.0)]).unwrap();
         let prev = s.run_comparable_scores(run).unwrap();
         let curr = vec![eval_axes("a", 40.0, 20.0)];
         let regs = find_regressions(&prev, &curr, 1.0);
@@ -362,7 +397,7 @@ mod tests {
     #[test]
     fn empty_run_lists_with_no_best_candidate() {
         let mut s = Store::open_in_memory().unwrap();
-        let run_id = s.save_run("t-empty", &[]).unwrap();
+        let run_id = s.save_run("t-empty", "", &[]).unwrap();
         assert_eq!(s.latest_run_id().unwrap(), Some(run_id));
         assert!(s.run_scores(run_id).unwrap().is_empty());
         assert!(s.run_comparable_scores(run_id).unwrap().is_empty());
@@ -379,10 +414,10 @@ mod tests {
     #[test]
     fn multiple_runs_list_newest_first_and_latest_is_max() {
         let mut s = Store::open_in_memory().unwrap();
-        let r1 = s.save_run("t1", &[eval("a", 10.0)]).unwrap();
-        let r2 = s.save_run("t2", &[]).unwrap();
+        let r1 = s.save_run("t1", "", &[eval("a", 10.0)]).unwrap();
+        let r2 = s.save_run("t2", "", &[]).unwrap();
         let r3 = s
-            .save_run("t3", &[eval("a", 30.0), eval("b", 20.0)])
+            .save_run("t3", "", &[eval("a", 30.0), eval("b", 20.0)])
             .unwrap();
         assert!(r1 < r2 && r2 < r3);
         assert_eq!(s.latest_run_id().unwrap(), Some(r3));
@@ -404,7 +439,7 @@ mod tests {
         // 現状の挙動を固定: 同一 candidate_id が複数行あると HashMap で後勝ち（挿入順）。
         let mut s = Store::open_in_memory().unwrap();
         let run = s
-            .save_run("t", &[eval("a", 10.0), eval("a", 70.0)])
+            .save_run("t", "", &[eval("a", 10.0), eval("a", 70.0)])
             .unwrap();
         assert_eq!(s.run_scores(run).unwrap().get("a"), Some(&70.0));
         assert_eq!(s.run_comparable_scores(run).unwrap().get("a"), Some(&70.0));
@@ -444,5 +479,44 @@ mod tests {
         let failed = vec!["c".to_string(), "b".to_string()];
         assert_eq!(find_dropped(&prev, &failed), vec!["b".to_string()]);
         assert!(find_dropped(&prev, &[]).is_empty());
+    }
+
+    #[test]
+    fn baseline_is_latest_run_with_same_options() {
+        // #191: 条件違いの run は基準にしない。同条件の最新 run を返す。
+        let mut s = Store::open_in_memory().unwrap();
+        let a1 = s.save_run("t1", "opt=a", &[eval("x", 75.0)]).unwrap();
+        let b1 = s.save_run("t2", "opt=b", &[eval("x", 70.0)]).unwrap();
+        assert_eq!(s.latest_run_id().unwrap(), Some(b1));
+        assert_eq!(s.latest_run_id_matching("opt=a").unwrap(), Some(a1));
+        assert_eq!(s.latest_run_id_matching("opt=b").unwrap(), Some(b1));
+        assert_eq!(s.latest_run_id_matching("opt=c").unwrap(), None);
+        // 同条件なら従来どおり下落を検出する
+        let prev = s.run_comparable_scores(a1).unwrap();
+        assert_eq!(find_regressions(&prev, &[eval("x", 60.0)], 1.0).len(), 1);
+    }
+
+    #[test]
+    fn opens_old_schema_db_and_treats_null_options_as_compatible() {
+        // 列追加前の DB（runs に options 列なし）
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE runs (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL);
+             CREATE TABLE evaluations (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 run_id INTEGER NOT NULL REFERENCES runs(id),
+                 candidate_id TEXT NOT NULL, score REAL NOT NULL, detail_json TEXT NOT NULL);
+             INSERT INTO runs (created_at) VALUES ('old');",
+        )
+        .unwrap();
+        let mut s = Store::from_conn(conn).unwrap();
+        // 旧 run は条件不明 → どの条件でも基準になる
+        assert_eq!(s.latest_run_id_matching("opt=a").unwrap(), Some(1));
+        let r2 = s.save_run("new", "opt=b", &[eval("x", 1.0)]).unwrap();
+        assert_eq!(s.latest_run_id_matching("opt=b").unwrap(), Some(r2));
+        assert_eq!(s.latest_run_id_matching("opt=a").unwrap(), Some(1));
+        // 2 回目の初期化（列が既にある）でも失敗しない
+        let s2 = Store::from_conn(s.conn).unwrap();
+        assert_eq!(s2.latest_run_id().unwrap(), Some(r2));
     }
 }
