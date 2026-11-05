@@ -70,8 +70,8 @@ enum Command {
         /// Wasm 実行の fuel 上限（命令数）。
         #[arg(long, default_value_t = 100_000_000)]
         wasm_fuel: u64,
-        /// Wasm 実行のメモリ上限（MB）。
-        #[arg(long, default_value_t = 64)]
+        /// Wasm 実行のメモリ上限（MB、1〜4096）。
+        #[arg(long, default_value_t = 64, value_parser = safecode_arena::wasm::parse_wasm_memory_mb)]
         wasm_max_memory_mb: usize,
         /// ミューテーションテスト（cargo mutants）を実行してテスト品質を採点する。
         /// 実行時間が長いためデフォルト off。cargo-mutants が PATH にない場合は Skipped 扱い。
