@@ -173,16 +173,30 @@ fn db_persists_runs_and_detects_regression() {
         .failure()
         .code(1)
         .stderr(predicate::str::contains("リグレッション検出"))
-        .stderr(predicate::str::contains("subject"));
+        .stderr(predicate::str::contains("subject"))
+        .stderr(predicate::str::contains("保存しません"));
 
-    // history: 2 run が並ぶ
+    // run #3: 同じ劣化状態で再実行しても、基準は #1 のままなので再び失敗する（#178）
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(&subject)
+        .args(["--db", db.to_str().unwrap()])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "リグレッション検出（直近 run #1 比）",
+        ));
+
+    // history: 回帰 run は保存されないので #1 のみ
     Command::cargo_bin("safecode")
         .unwrap()
         .args(["history", "--db", db.to_str().unwrap()])
         .assert()
         .success()
         .stdout(predicate::str::contains("#1"))
-        .stdout(predicate::str::contains("#2"));
+        .stdout(predicate::str::contains("#2").not());
 }
 
 fn write_py(name: &str, source: &str) -> tempfile::NamedTempFile {

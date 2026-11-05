@@ -243,6 +243,7 @@ fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
 }
 
 /// 現在の評価を保存する前に直近 run と比較し、後退した候補を stderr に警告する。
+/// リグレッションがあれば run は保存しない（基準を劣化値に更新しないため）。
 /// リグレッションが 1 件以上あれば `true` を返す。
 fn persist_and_report_regressions(
     db_path: &str,
@@ -270,6 +271,12 @@ fn persist_and_report_regressions(
                 );
             }
         }
+    }
+
+    if has_regression {
+        // 劣化 run を保存すると次回の比較基準が下がり、再実行で回帰が見逃される。
+        eprintln!("リグレッション検出のため run を保存しません（基準を維持）");
+        return Ok(true);
     }
 
     let created_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
