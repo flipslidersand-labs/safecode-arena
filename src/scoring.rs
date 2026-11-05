@@ -57,6 +57,39 @@ pub fn axes_without_performance(
     mutation_total: usize,
     audit_findings: usize,
 ) -> AxisScores {
+    axes_with_audit_status(
+        compile,
+        test,
+        prop_test,
+        lint,
+        lint_warnings,
+        wasm,
+        metrics,
+        rubric,
+        mutation_caught,
+        mutation_total,
+        Some(audit_findings),
+    )
+}
+
+/// `axes_without_performance` の audit 結果を `Option` で受ける版。
+///
+/// `audit_findings` が `None` なら cargo audit が結果を返せなかった（audit 不能）ことを表し、
+/// security の audit 項(20%)を除外して unsafe/lint の重みで再配分する（0 件扱いで加点しない, #179）。
+#[allow(clippy::too_many_arguments)]
+pub fn axes_with_audit_status(
+    compile: &StageOutcome,
+    test: &StageOutcome,
+    prop_test: &StageOutcome,
+    lint: &StageOutcome,
+    lint_warnings: usize,
+    wasm: &StageOutcome,
+    metrics: &SourceMetrics,
+    rubric: &Rubric,
+    mutation_caught: usize,
+    mutation_total: usize,
+    audit_findings: Option<usize>,
+) -> AxisScores {
     // mutation が実行された場合は重みを再配分する。
     // Skipped（total == 0）の場合は従来通り compile(40%) + test(40%) + prop_test(20%)。
     let mut correctness = if mutation_total > 0 {
@@ -95,9 +128,16 @@ pub fn axes_without_performance(
         let unsafe_ratio = metrics.security_ratio();
         let lint_sec = lint_security_ratio(lint, lint_warnings);
         // audit: 脆弱性 1 件ごとに 0.25 減点、4 件以上で 0
-        let audit_sec = (1.0 - 0.25 * audit_findings as f64).clamp(0.0, 1.0);
         // security = unsafe(40%) + lint(40%) + audit(20%)
-        let sec = rubric.security * (unsafe_ratio * 0.4 + lint_sec * 0.4 + audit_sec * 0.2);
+        // audit 不能(None)は audit 項を除外し、unsafe/lint を 50% ずつに再配分する。
+        let sec_ratio = match audit_findings {
+            Some(n) => {
+                let audit_sec = (1.0 - 0.25 * n as f64).clamp(0.0, 1.0);
+                unsafe_ratio * 0.4 + lint_sec * 0.4 + audit_sec * 0.2
+            }
+            None => (unsafe_ratio * 0.4 + lint_sec * 0.4) / 0.8,
+        };
+        let sec = rubric.security * sec_ratio;
 
         let heuristic_maint = metrics.maintainability_ratio();
         let lint_maint = lint_maintainability_ratio(lint_warnings);
@@ -743,6 +783,32 @@ mod tests {
         assert!(approx(sec(4), 16.0));
         assert!(approx(sec(10), 16.0));
         assert!(approx(sec(1000), 16.0));
+    }
+
+    #[test]
+    fn audit_unavailable_excludes_audit_term_instead_of_full_credit() {
+        let run = |lint: &StageOutcome, audit: Option<usize>| {
+            axes_with_audit_status(
+                &passed(1),
+                &passed(1),
+                &StageOutcome::Skipped,
+                lint,
+                0,
+                &StageOutcome::Skipped,
+                &metrics("fn f(){}"),
+                &Rubric::default(),
+                0,
+                0,
+                audit,
+            )
+            .security
+        };
+        // 全項クリーンなら再配分しても満点（0 件扱いと同値）
+        assert!(approx(run(&StageOutcome::Skipped, None), 20.0));
+        // lint 失敗(lint_sec=0): 0 件扱いなら 20*(0.4+0.2)=12、除外なら 20*(0.4/0.8)=10
+        let failed_lint = failed();
+        assert!(approx(run(&failed_lint, Some(0)), 12.0));
+        assert!(approx(run(&failed_lint, None), 10.0));
     }
 
     #[test]

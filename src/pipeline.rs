@@ -221,7 +221,8 @@ struct StageResults {
     mutation: StageOutcome,
     mutation_caught: usize,
     mutation_total: usize,
-    audit_findings: usize,
+    /// None = cargo audit が結果(JSON)を返せなかった（採点では audit 項を除外, #179）。
+    audit_findings: Option<usize>,
     bench_ns: Option<u64>,
     reasoning_score: Option<f64>,
     reasoning_comment: Option<String>,
@@ -240,7 +241,7 @@ impl Default for StageResults {
             mutation: StageOutcome::Skipped,
             mutation_caught: 0,
             mutation_total: 0,
-            audit_findings: 0,
+            audit_findings: Some(0),
             bench_ns: None,
             reasoning_score: None,
             reasoning_comment: None,
@@ -321,7 +322,7 @@ pub fn evaluate_candidate(
 /// ステージ結果を採点して `Evaluation` を組み立てる（言語非依存）。
 fn assemble(candidate: &Candidate, r: StageResults, rubric: &Rubric) -> Evaluation {
     let metrics = SourceMetrics::analyze(&candidate.source);
-    let axes = scoring::axes_without_performance(
+    let axes = scoring::axes_with_audit_status(
         &r.compile,
         &r.test,
         &r.prop_test,
@@ -347,7 +348,7 @@ fn assemble(candidate: &Candidate, r: StageResults, rubric: &Rubric) -> Evaluati
         mutation: r.mutation,
         mutation_caught: r.mutation_caught,
         mutation_total: r.mutation_total,
-        audit_findings: r.audit_findings,
+        audit_findings: r.audit_findings.unwrap_or(0),
         bench_ns: r.bench_ns,
         reasoning: if r.reasoning_score.is_some() {
             StageOutcome::Passed { duration_ms: 0 }
@@ -993,8 +994,10 @@ fn run_ts_stages(
 
 /// `cargo audit --json` で Rust 候補の脆弱性をスキャンし、検出件数を返す。
 ///
-/// - `cargo audit` が PATH にない場合や `Cargo.lock` が存在しない場合は 0 を返す（減点なし）。
-fn run_cargo_audit(root: &Path, timeout: Duration) -> usize {
+/// - `cargo audit` が PATH にない場合や `Cargo.lock` が存在しない場合は `Some(0)`（減点なし・従来どおり）。
+/// - 実行したが JSON が得られない（タイムアウト・起動失敗・RustSec DB 取得エラー）場合は
+///   `None`（audit 不能）。脆弱性検出時も exit 1 だが JSON は出るため exit code でなく JSON 可否で判定する。
+fn run_cargo_audit(root: &Path, timeout: Duration) -> Option<usize> {
     let audit_available = std::process::Command::new("cargo")
         .args(["audit", "--version"])
         .stdout(std::process::Stdio::null())
@@ -1003,16 +1006,16 @@ fn run_cargo_audit(root: &Path, timeout: Duration) -> usize {
         .map(|s| s.success())
         .unwrap_or(false);
     if !audit_available {
-        return 0;
+        return Some(0);
     }
     if !root.join("Cargo.lock").exists() {
-        return 0;
+        return Some(0);
     }
 
     let mut cmd = Command::new("cargo");
     cmd.args(["audit", "--json"]).current_dir(root);
     let (_outcome, stdout) = runner::run_stage_capture("audit", cmd, timeout);
-    parse_audit_json(&stdout).unwrap_or(0)
+    parse_audit_json(&stdout)
 }
 
 /// `cargo audit --json` の出力から脆弱性件数を取り出す。
@@ -1666,7 +1669,7 @@ mod copy_assemble_tests {
             lint_warnings: 3,
             mutation_caught: 2,
             mutation_total: 5,
-            audit_findings: 1,
+            audit_findings: Some(1),
             bench_ns: Some(42),
             wasm_fuel_used: Some(9),
             ..Default::default()
