@@ -145,6 +145,37 @@ fn copy_ext(src_dir: &Path, dest: &Path, ext: &str) -> Result<()> {
     Ok(())
 }
 
+/// `copy_ext` と同様だが、`dest` に同名ファイルが既にあれば上書きせず
+/// `prefix` 付きの名前でコピーする。それも存在すればエラー(黙って上書きしない)。
+/// Rust の integration test は 1 ファイル 1 クレートなのでリネームしても安全。
+fn copy_ext_keep_existing(src_dir: &Path, dest: &Path, ext: &str, prefix: &str) -> Result<()> {
+    fs::create_dir_all(dest).context("コピー先ディレクトリの作成に失敗")?;
+    for entry in fs::read_dir(src_dir)
+        .with_context(|| format!("テストディレクトリの読込に失敗: {}", src_dir.display()))?
+    {
+        let path = entry?.path();
+        if path.extension().and_then(|e| e.to_str()) != Some(ext) {
+            continue;
+        }
+        let name = path.file_name().unwrap();
+        let mut target = dest.join(name);
+        if target.exists() {
+            let renamed = format!("{prefix}{}", name.to_string_lossy());
+            target = dest.join(&renamed);
+            if target.exists() {
+                anyhow::bail!(
+                    "テストファイル名が衝突: {} ({} も既に存在)",
+                    path.display(),
+                    renamed
+                );
+            }
+        }
+        fs::copy(&path, &target)
+            .with_context(|| format!("テストのコピーに失敗: {}", path.display()))?;
+    }
+    Ok(())
+}
+
 /// エントリ名が Rust の単純な識別子か検証する（ハーネスへの注入防止）。
 fn is_valid_entry(name: &str) -> bool {
     !name.is_empty()
@@ -427,7 +458,7 @@ fn run_rust_stages(
     let lint_warnings = count_lint_warnings(&lint_stderr);
 
     let prop_test = if let Some(prop_dir) = prop_tests_dir {
-        copy_ext(prop_dir, &root.join("tests"), "rs")?;
+        copy_ext_keep_existing(prop_dir, &root.join("tests"), "rs", "prop_")?;
         let mut pt = Command::new("cargo");
         pt.arg("test").current_dir(root);
         runner::run_stage("prop_test", pt, timeout)
@@ -1557,6 +1588,43 @@ mod copy_assemble_tests {
         copy_ext(&src, &dest, "rs").unwrap();
         assert!(dest.is_dir());
         assert_eq!(fs::read_dir(&dest).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn copy_ext_keep_existing_renames_colliding_file_with_prefix() {
+        let d = tempfile::tempdir().unwrap();
+        let src = d.path().join("src");
+        write(&src, "props.rs", "prop");
+        write(&src, "other.rs", "other");
+        let dest = d.path().join("dest");
+        write(&dest, "props.rs", "user");
+        copy_ext_keep_existing(&src, &dest, "rs", "prop_").unwrap();
+        assert_eq!(fs::read_to_string(dest.join("props.rs")).unwrap(), "user");
+        assert_eq!(
+            fs::read_to_string(dest.join("prop_props.rs")).unwrap(),
+            "prop"
+        );
+        assert_eq!(fs::read_to_string(dest.join("other.rs")).unwrap(), "other");
+    }
+
+    #[test]
+    fn copy_ext_keep_existing_errors_when_renamed_also_collides() {
+        let d = tempfile::tempdir().unwrap();
+        let src = d.path().join("src");
+        write(&src, "props.rs", "prop");
+        let dest = d.path().join("dest");
+        write(&dest, "props.rs", "user");
+        write(&dest, "prop_props.rs", "user2");
+        let err = format!(
+            "{:#}",
+            copy_ext_keep_existing(&src, &dest, "rs", "prop_").unwrap_err()
+        );
+        assert!(err.contains("prop_props.rs"), "{err}");
+        assert_eq!(fs::read_to_string(dest.join("props.rs")).unwrap(), "user");
+        assert_eq!(
+            fs::read_to_string(dest.join("prop_props.rs")).unwrap(),
+            "user2"
+        );
     }
 
     #[test]
