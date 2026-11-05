@@ -451,3 +451,146 @@ pub fn render_html(evals: &[Evaluation]) -> String {
         evals.len()
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::AxisScores;
+
+    fn eval(id: &str, score: f64) -> Evaluation {
+        Evaluation {
+            candidate_id: id.to_string(),
+            compile: StageOutcome::Skipped,
+            test: StageOutcome::Skipped,
+            lint: StageOutcome::Skipped,
+            lint_warnings: 0,
+            prop_test: StageOutcome::Skipped,
+            wasm: StageOutcome::Skipped,
+            wasm_fuel_used: None,
+            mutation: StageOutcome::Skipped,
+            mutation_caught: 0,
+            mutation_total: 0,
+            audit_findings: 0,
+            bench_ns: None,
+            reasoning: StageOutcome::Skipped,
+            reasoning_score: 0.0,
+            reasoning_comment: None,
+            axes: AxisScores::default(),
+            score,
+        }
+    }
+
+    const GREEN: &str = "#4caf50";
+    const ORANGE: &str = "#ff9800";
+    const RED: &str = "#f44336";
+
+    /// スコア `score` のバーの `style` 属性断片を返す。
+    fn bar_style(width: &str, color: &str) -> String {
+        format!("width:{width}%;background:{color}")
+    }
+
+    #[test]
+    fn bar_color_boundary_70_is_green() {
+        let html = render_html(&[eval("a", 70.0)]);
+        assert!(html.contains(&bar_style("70.0", GREEN)));
+    }
+
+    #[test]
+    fn bar_color_just_below_70_is_orange() {
+        let html = render_html(&[eval("a", 69.9)]);
+        assert!(html.contains(&bar_style("69.9", ORANGE)));
+    }
+
+    #[test]
+    fn bar_color_boundary_40_is_orange() {
+        let html = render_html(&[eval("a", 40.0)]);
+        assert!(html.contains(&bar_style("40.0", ORANGE)));
+    }
+
+    #[test]
+    fn bar_color_just_below_40_is_red() {
+        let html = render_html(&[eval("a", 39.9)]);
+        assert!(html.contains(&bar_style("39.9", RED)));
+    }
+
+    #[test]
+    fn bar_color_zero_is_red() {
+        let html = render_html(&[eval("a", 0.0)]);
+        assert!(html.contains(&bar_style("0.0", RED)));
+    }
+
+    #[test]
+    fn bar_width_is_clamped_to_100_but_score_text_is_not() {
+        let html = render_html(&[eval("a", 150.0)]);
+        assert!(html.contains(&bar_style("100.0", GREEN)));
+        assert!(!html.contains("width:150.0%"));
+        // 数値表示側はクランプされない。
+        assert!(html.contains("<span class=\"bar-score\">150.0</span>"));
+    }
+
+    #[test]
+    fn only_first_row_has_best_class() {
+        let html = render_html(&[eval("a", 90.0), eval("b", 80.0), eval("c", 10.0)]);
+        // CSS 内の `tr.best` と区別するため、属性付きの行開始タグで数える。
+        assert_eq!(html.matches("<tr class=\"best\">").count(), 1);
+        let best_pos = html.find("<tr class=\"best\">").unwrap();
+        let a_pos = html.find("<code>a</code>").unwrap();
+        let b_pos = html.find("<code>b</code>").unwrap();
+        assert!(best_pos < a_pos && a_pos < b_pos);
+        // best 行は先頭候補の行であること。
+        let row_end = html[best_pos..].find("</tr>").unwrap();
+        assert!(html[best_pos..best_pos + row_end].contains("<code>a</code>"));
+    }
+
+    #[test]
+    fn wasm_line_hidden_when_skipped() {
+        let html = render_html(&[eval("a", 50.0)]);
+        assert!(!html.contains("<li>Wasm:"));
+    }
+
+    #[test]
+    fn wasm_line_shown_when_not_skipped() {
+        let mut e = eval("a", 50.0);
+        e.wasm = StageOutcome::Passed { duration_ms: 5 };
+        let html = render_html(&[e]);
+        assert!(html.contains("<li>Wasm:"));
+    }
+
+    #[test]
+    fn empty_evals_renders_without_panic() {
+        let html = render_html(&[]);
+        assert!(html.contains("候補数: 0"));
+        assert!(html.contains("<h2>比較サマリー</h2>"));
+        assert!(html.contains("</html>"));
+        assert!(!html.contains("<tr class=\"best\">"));
+        assert!(!html.contains("<details"));
+    }
+
+    #[test]
+    fn candidate_count_matches_input() {
+        let html = render_html(&[eval("a", 1.0), eval("b", 2.0)]);
+        assert!(html.contains("候補数: 2"));
+    }
+
+    /// 現状の挙動の固定（特性テスト）であり、仕様ではない。
+    /// candidate_id は HTML エスケープされずそのまま埋め込まれる。
+    /// エスケープを導入する際は、このテストを意図的に更新すること。
+    #[test]
+    fn characterization_candidate_id_is_not_html_escaped_current_behavior() {
+        let html = render_html(&[eval("<b>&x", 50.0)]);
+        assert!(html.contains("<code><b>&x</code>"));
+        assert!(!html.contains("&lt;b&gt;"));
+        assert!(!html.contains("&amp;x"));
+    }
+
+    /// 現状の挙動の固定（特性テスト）であり、仕様ではない。
+    /// サマリー表のヘッダに resource 列は無い（Markdown 版とは列構成が異なる）。
+    /// 詳細表には resource_usage 行がある。
+    #[test]
+    fn characterization_summary_table_has_no_resource_column_current_behavior() {
+        let html = render_html(&[eval("a", 50.0)]);
+        assert!(html.contains("<th>保守</th><th>コンパイル</th>"));
+        assert!(!html.contains("<th>資源"));
+        assert!(html.contains("<td>resource_usage</td>"));
+    }
+}
