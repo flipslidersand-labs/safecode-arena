@@ -178,6 +178,38 @@ pub fn assign_reasoning(eval: &mut Evaluation, llm_score: f64, rubric: &Rubric) 
     eval.score = eval.axes.total();
 }
 
+/// 候補集合に reasoning 軸を付与する（候補ごとの rubric 版）。
+///
+/// reasoning ステージが Passed の候補にだけ `assign_reasoning` を適用する。
+/// レビューが得られなかった候補（API 失敗等, `llm.rs` の None）を 0 点扱いにしない（#190）。
+/// 一部の候補だけレビュー済みのときは、未レビュー候補の score を reasoning 配点を除いた
+/// 重みで正規化（`score * 全配点 / (全配点 - reasoning 配点)`）し、同じ尺度で比較できるようにする。
+/// 全候補が未レビューなら何もしない（reasoning 軸は採点から除外）。`axes` は変更しない。
+pub fn assign_reasoning_each(evals: &mut [Evaluation], rubrics: &[Rubric]) {
+    assert_eq!(
+        evals.len(),
+        rubrics.len(),
+        "evals と rubrics の長さが不一致"
+    );
+    let any_reviewed = evals.iter().any(|e| e.reasoning.is_passed());
+    for (e, rubric) in evals.iter_mut().zip(rubrics) {
+        if e.reasoning.is_passed() {
+            assign_reasoning(e, e.reasoning_score, rubric);
+        } else if any_reviewed && rubric.reasoning > 0.0 {
+            let total = rubric.correctness
+                + rubric.security
+                + rubric.performance
+                + rubric.maintainability
+                + rubric.resource_usage
+                + rubric.reasoning;
+            let without = total - rubric.reasoning;
+            if without > 0.0 {
+                e.score = e.axes.total() * total / without;
+            }
+        }
+    }
+}
+
 /// 候補集合の compile+test 所要時間を相対比較し、performance 軸を付与する。
 /// 最速候補に満点、それ以外は `min_time / own_time` で按分。
 /// compile か test が通っていない候補は performance 0。
@@ -703,6 +735,56 @@ mod tests {
             reasoning: w,
             ..Rubric::default()
         }
+    }
+
+    fn reviewed(mut e: Evaluation, score: f64) -> Evaluation {
+        e.reasoning = StageOutcome::Passed { duration_ms: 0 };
+        e.reasoning_score = score;
+        e
+    }
+
+    fn base_eval(correctness: f64) -> Evaluation {
+        let mut e = perf_eval(1);
+        e.axes.correctness = correctness;
+        e.score = e.axes.total();
+        e
+    }
+
+    /// 回帰 (#190): 全候補が未レビュー（reasoning_score は 0.0 に落ちている）なら
+    /// reasoning 軸は採点から除外され、score は変わらない。
+    #[test]
+    fn reasoning_all_unreviewed_leaves_scores_unchanged() {
+        let r = reasoning_rubric(10.0);
+        let mut evals = vec![base_eval(40.0), base_eval(30.0)];
+        assign_reasoning_each(&mut evals, &[r, r]);
+        assert_eq!(evals[0].score, 40.0);
+        assert_eq!(evals[1].score, 30.0);
+        assert_eq!(evals[0].axes.reasoning, 0.0);
+    }
+
+    /// 回帰 (#190): 一部だけレビュー失敗でも、失敗候補は 0 点扱いで下位に落ちない。
+    /// 配点合計 = 50+20+15+10+5+10 = 110、未レビューは reasoning を除く 100 で正規化。
+    #[test]
+    fn reasoning_partial_failure_normalizes_unreviewed_candidate() {
+        let r = reasoning_rubric(10.0);
+        let mut evals = vec![
+            reviewed(base_eval(50.0), 0.5), // 50 + 5 = 55
+            base_eval(50.0),                // 50 * 110/100 = 55
+        ];
+        assign_reasoning_each(&mut evals, &[r, r]);
+        assert_eq!(evals[0].score, 55.0);
+        assert!((evals[1].score - 55.0).abs() < 1e-9);
+        // axes は変更しない（出力スキーマ・内訳は不変）
+        assert_eq!(evals[1].axes.reasoning, 0.0);
+    }
+
+    #[test]
+    fn reasoning_zero_weight_ignores_review_state() {
+        let r = reasoning_rubric(0.0);
+        let mut evals = vec![reviewed(base_eval(40.0), 1.0), base_eval(40.0)];
+        assign_reasoning_each(&mut evals, &[r, r]);
+        assert_eq!(evals[0].score, 40.0);
+        assert_eq!(evals[1].score, 40.0);
     }
 
     #[test]
