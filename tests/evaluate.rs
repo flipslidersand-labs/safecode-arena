@@ -462,3 +462,54 @@ fn evaluate_all_candidates_erroring_warns_with_id_and_fails() {
         .stderr(predicate::str::contains("[warn] cand_b の評価失敗"))
         .stderr(predicate::str::contains("全候補の評価に失敗しました"));
 }
+
+#[test]
+fn db_previous_candidate_dropped_by_eval_error_fails() {
+    // #181: 前回 run にあった候補が今回評価エラーで脱落しても、他が成功すれば
+    // 従来は比較されず exit 0 だった。--db 指定時は脱落を回帰として扱う。
+    let work = tempfile::tempdir().unwrap();
+    let db = work.path().join("history.db");
+    let keep = work.path().join("keep.rs");
+    let flaky = work.path().join("flaky.py");
+    std::fs::write(&keep, "pub fn add(a: i32, b: i32) -> i32 { a + b }\n").unwrap();
+    std::fs::write(&flaky, "def f():\n    return 1\n").unwrap();
+
+    // run #1: 両方成功して保存される。
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(&keep)
+        .arg(&flaky)
+        .args(["--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("run #1 を保存"));
+
+    // run #2: tests ディレクトリ内の "bad.py" がディレクトリなので、Python 候補だけコピーで Err になる。
+    let tests = work.path().join("tests");
+    std::fs::create_dir_all(tests.join("bad.py")).unwrap();
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(&keep)
+        .arg(&flaky)
+        .args(["--tests", tests.to_str().unwrap()])
+        .args(["--db", db.to_str().unwrap()])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("[warn] flaky の評価失敗"))
+        .stderr(predicate::str::contains("評価失敗で脱落"))
+        .stderr(predicate::str::contains("flaky"))
+        .stderr(predicate::str::contains("保存しません"));
+
+    // --db なしでは従来どおり exit 0（generate と揃えた #173 の仕様）。
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(&keep)
+        .arg(&flaky)
+        .args(["--tests", tests.to_str().unwrap()])
+        .assert()
+        .success();
+}

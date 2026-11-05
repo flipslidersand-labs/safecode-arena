@@ -208,6 +208,7 @@ fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
     let candidates = pipeline::load_candidates(&args.candidates)?;
     let mut evals = Vec::with_capacity(candidates.len());
     let mut rubrics = Vec::with_capacity(candidates.len());
+    let mut failed_ids: Vec<String> = Vec::new();
     for candidate in &candidates {
         eprintln!("評価中: {} ...", candidate.id);
         let rubric = config.rubric_for(candidate.language.name());
@@ -217,6 +218,8 @@ fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
         ) {
             evals.push(eval);
             rubrics.push(rubric);
+        } else {
+            failed_ids.push(candidate.id.clone());
         }
     }
     if evals.is_empty() {
@@ -233,8 +236,12 @@ fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
 
     // 永続化 + リグレッション検出（出力後に実行して PR コメント用 report が確実に書かれるようにする）
     if let Some(db_path) = args.db.as_deref() {
-        let has_regression =
-            persist_and_report_regressions(db_path, &ranked, args.regression_threshold)?;
+        let has_regression = persist_and_report_regressions(
+            db_path,
+            &ranked,
+            &failed_ids,
+            args.regression_threshold,
+        )?;
         if has_regression {
             std::process::exit(1);
         }
@@ -248,6 +255,7 @@ fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
 fn persist_and_report_regressions(
     db_path: &str,
     ranked: &[Evaluation],
+    failed_ids: &[String],
     threshold: f64,
 ) -> anyhow::Result<bool> {
     let mut s = Store::open(Path::new(db_path))?;
@@ -256,8 +264,18 @@ fn persist_and_report_regressions(
     if let Some(prev_id) = s.latest_run_id()? {
         let prev = s.run_comparable_scores(prev_id)?;
         let regs = store::find_regressions(&prev, ranked, threshold);
+        let dropped = store::find_dropped(&prev, failed_ids);
+        if !dropped.is_empty() {
+            has_regression = true;
+            eprintln!("⚠️  前回 run #{prev_id} にあった候補が評価失敗で脱落:");
+            for id in &dropped {
+                eprintln!("  - {id}");
+            }
+        }
         if regs.is_empty() {
-            eprintln!("リグレッションなし（直近 run #{prev_id} と比較、performance 軸を除く）");
+            if dropped.is_empty() {
+                eprintln!("リグレッションなし（直近 run #{prev_id} と比較、performance 軸を除く）");
+            }
         } else {
             has_regression = true;
             eprintln!("⚠️  リグレッション検出（直近 run #{prev_id} 比）:");
