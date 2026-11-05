@@ -44,9 +44,10 @@ struct RawReview {
 
 fn build_prompt(source: &str, test_passed: bool) -> String {
     let test_result = if test_passed { "PASSED" } else { "FAILED" };
+    // 信頼できない source を最後に埋め込み、その中の {TEST_RESULT} が再置換されないようにする
     PROMPT_TEMPLATE
-        .replace("{SOURCE}", source)
         .replace("{TEST_RESULT}", test_result)
+        .replace("{SOURCE}", source)
 }
 
 /// 応答から最初に `RawReview` として読める JSON オブジェクトを探す。
@@ -87,6 +88,20 @@ pub fn review(source: &str, test_passed: bool) -> Option<LlmReview> {
         }
     };
     parse_review(&text)
+}
+
+#[cfg(test)]
+mod build_prompt_tests {
+    use super::*;
+
+    #[test]
+    fn source_containing_test_result_placeholder_is_kept_verbatim() {
+        let source = "let s = \"{TEST_RESULT}\";";
+        let p = build_prompt(source, true);
+        assert!(p.contains(source), "source was rewritten: {p}");
+        // テンプレート側の {TEST_RESULT} だけが置換される
+        assert_eq!(p.matches("PASSED").count(), 1);
+    }
 }
 
 #[cfg(test)]
