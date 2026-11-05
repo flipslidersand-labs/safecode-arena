@@ -227,9 +227,7 @@ fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
     }
 
     scoring::assign_performance_each(&mut evals, &rubrics);
-    for (e, rubric) in evals.iter_mut().zip(&rubrics) {
-        scoring::assign_reasoning(e, e.reasoning_score, rubric);
-    }
+    scoring::assign_reasoning_each(&mut evals, &rubrics);
     let ranked = scoring::rank(evals);
 
     render_and_write(&ranked, args.format, args.out.as_deref())?;
@@ -388,9 +386,8 @@ fn run_generate(
     }
 
     scoring::assign_performance(&mut evals, &rubric);
-    for e in &mut evals {
-        scoring::assign_reasoning(e, e.reasoning_score, &rubric);
-    }
+    let rubrics = vec![rubric; evals.len()];
+    scoring::assign_reasoning_each(&mut evals, &rubrics);
     let ranked = scoring::rank(evals);
 
     render_and_write(&ranked, format, out.as_deref())
