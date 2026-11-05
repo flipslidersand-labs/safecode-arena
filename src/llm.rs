@@ -50,19 +50,23 @@ fn build_prompt(source: &str, test_passed: bool) -> String {
         .replace("{SOURCE}", source)
 }
 
+/// 応答から最初に `RawReview` として読める JSON オブジェクトを探す。
+///
+/// 前置き文・後置き文・```json フェンスの有無に依らず、各 '{' から順に
+/// serde_json のストリーム読みを試す（オブジェクト終端は serde_json が決めるので、
+/// 後置き文中の '}' や文字列内の '}' に影響されない）。
 fn parse_review(text: &str) -> Option<LlmReview> {
-    // モデルが ```json ... ``` で包むことがあるので strip する
-    let trimmed = text.trim();
-    let json_str = if let Some(inner) = trimmed
-        .strip_prefix("```json")
-        .or_else(|| trimmed.strip_prefix("```"))
-    {
-        inner.trim_end_matches("```").trim()
-    } else {
-        trimmed
+    let raw = text.match_indices('{').find_map(|(i, _)| {
+        serde_json::Deserializer::from_str(&text[i..])
+            .into_iter::<RawReview>()
+            .next()?
+            .ok()
+    });
+    let Some(raw) = raw else {
+        let head: String = text.trim().chars().take(80).collect();
+        eprintln!("[warn] LLM 応答から score/comment を読み取れません（先頭80字）: {head:?}");
+        return None;
     };
-
-    let raw: RawReview = serde_json::from_str(json_str).ok()?;
     let score = raw.score.clamp(0.0, 1.0);
     let comment = raw.comment.chars().take(120).collect();
     Some(LlmReview { score, comment })
@@ -149,10 +153,43 @@ mod tests {
     }
 
     #[test]
-    fn parse_with_preamble_returns_none() {
-        // 現状の挙動を固定: 前置説明文があると strip されずパース失敗 -> None
+    fn parse_with_preamble_fenced() {
         let text = "Here is the review:\n```json\n{\"score\": 0.5, \"comment\": \"x\"}\n```";
-        assert!(parse_review(text).is_none());
+        let r = parse_review(text).unwrap();
+        assert!((r.score - 0.5).abs() < 1e-9);
+        assert_eq!(r.comment, "x");
+    }
+
+    #[test]
+    fn parse_with_preamble_bare_json() {
+        let text = "Sure. {\"score\": 0.4, \"comment\": \"y\"}";
+        assert!((parse_review(text).unwrap().score - 0.4).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parse_with_trailing_text() {
+        let text = "{\"score\": 0.6, \"comment\": \"z\"}\n\nHope this helps {really}.";
+        assert!((parse_review(text).unwrap().score - 0.6).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parse_with_preamble_and_postamble_fenced() {
+        let text =
+            "Review:\n```json\n{\"score\": 0.3, \"comment\": \"a}b\"}\n```\nNote: see {above}.";
+        let r = parse_review(text).unwrap();
+        assert!((r.score - 0.3).abs() < 1e-9);
+        assert_eq!(r.comment, "a}b");
+    }
+
+    #[test]
+    fn parse_preamble_with_braces_uses_first_valid_object() {
+        let text = "Using {x} as a placeholder:\n{\"score\": 0.2, \"comment\": \"ok\"}";
+        assert!((parse_review(text).unwrap().score - 0.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parse_preamble_without_json_returns_none() {
+        assert!(parse_review("I cannot review this {code}.").is_none());
     }
 
     #[test]
