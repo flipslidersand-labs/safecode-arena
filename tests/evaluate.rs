@@ -280,6 +280,49 @@ fn wasm_entry_runs_sandbox_and_awards_resource_usage() {
         .stdout(predicate::str::contains("\"resource_usage\": 5.0"));
 }
 
+#[test]
+#[ignore = "wasm32-wasip1 ターゲットが必要。CI は ignored-tests.yml が --ignored で実行する (#108)"]
+fn db_skips_comparison_when_run_options_differ() {
+    // #191: 同じコードでも --wasm-entry の有無で resource_usage が 5 点変わる。
+    // 実行条件が違う run とは比較せず、回帰として exit 1 にしない。
+    let work = tempfile::tempdir().unwrap();
+    let db = work.path().join("history.db");
+    let subject = work.path().join("subject.rs");
+    std::fs::write(&subject, "pub fn run() {}\n").unwrap();
+
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .args(["evaluate", "--wasm-entry", "run"])
+        .arg(&subject)
+        .args(["--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("run #1 を保存"));
+
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(&subject)
+        .args(["--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("実行条件が同じ過去 run がない"))
+        .stderr(predicate::str::contains("リグレッション検出").not())
+        .stderr(predicate::str::contains("run #2 を保存"));
+
+    // 条件を戻すと #1 と比較され、同じコードなので回帰なし。
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .args(["evaluate", "--wasm-entry", "run"])
+        .arg(&subject)
+        .args(["--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "リグレッションなし（直近 run #1 と比較",
+        ));
+}
+
 // ── Go ──────────────────────────────────────────────────────────────────────
 
 fn write_go(name: &str, source: &str) -> tempfile::NamedTempFile {
