@@ -234,11 +234,13 @@ fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
 
     // 永続化 + リグレッション検出（出力後に実行して PR コメント用 report が確実に書かれるようにする）
     if let Some(db_path) = args.db.as_deref() {
+        let options = run_options_key(args.llm_review, args.mutation, args.wasm_entry.as_deref());
         let has_regression = persist_and_report_regressions(
             db_path,
             &ranked,
             &failed_ids,
             args.regression_threshold,
+            &options,
         )?;
         if has_regression {
             std::process::exit(1);
@@ -247,7 +249,17 @@ fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 現在の評価を保存する前に直近 run と比較し、後退した候補を stderr に警告する。
+/// スコアに影響する実行オプションを正規化した比較キー（#191）。
+/// reasoning（--llm-review）・correctness の再配分（--mutation）・resource_usage（--wasm-entry）が変わる。
+fn run_options_key(llm_review: bool, mutation: bool, wasm_entry: Option<&str>) -> String {
+    format!(
+        "llm_review={llm_review};mutation={mutation};wasm_entry={}",
+        wasm_entry.unwrap_or("")
+    )
+}
+
+/// 現在の評価を保存する前に、実行条件（`options`）が同じ直近 run と比較し、後退した候補を stderr に警告する。
+/// 条件が同じ run が無ければ比較をスキップする（条件違いのスコア差を回帰と誤検出しないため）。
 /// リグレッションがあれば run は保存しない（基準を劣化値に更新しないため）。
 /// リグレッションが 1 件以上あれば `true` を返す。
 fn persist_and_report_regressions(
@@ -255,11 +267,16 @@ fn persist_and_report_regressions(
     ranked: &[Evaluation],
     failed_ids: &[String],
     threshold: f64,
+    options: &str,
 ) -> anyhow::Result<bool> {
     let mut s = Store::open(Path::new(db_path))?;
     let mut has_regression = false;
 
-    if let Some(prev_id) = s.latest_run_id()? {
+    let baseline = s.latest_run_id_matching(options)?;
+    if baseline.is_none() && s.latest_run_id()?.is_some() {
+        eprintln!("⚠️  実行条件が同じ過去 run がないため比較をスキップ（今回: {options}）");
+    }
+    if let Some(prev_id) = baseline {
         let prev = s.run_comparable_scores(prev_id)?;
         let regs = store::find_regressions(&prev, ranked, threshold);
         let dropped = store::find_dropped(&prev, failed_ids);
@@ -296,7 +313,7 @@ fn persist_and_report_regressions(
     }
 
     let created_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let run_id = s.save_run(&created_at, ranked)?;
+    let run_id = s.save_run(&created_at, options, ranked)?;
     eprintln!("run #{run_id} を保存しました: {db_path}");
     Ok(has_regression)
 }
