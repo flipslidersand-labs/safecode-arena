@@ -1354,6 +1354,70 @@ mod mutation_tests {
         assert_eq!(parse_mutmut_json(""), None);
         assert_eq!(parse_mutmut_json("just plain text\n"), None);
     }
+
+    #[test]
+    fn parse_mutants_json_typical() {
+        let output = "{\"total_mutants\":6,\"caught\":4}\n";
+        assert_eq!(parse_mutants_json(output), Some((4, 6)));
+    }
+
+    #[test]
+    fn parse_mutants_json_skips_progress_lines() {
+        // 進捗ログが前後に混在しても JSON 行を採る。
+        let output = "Found 6 mutants\nrunning...\n{\"total_mutants\":6,\"caught\":4}\ndone\n";
+        assert_eq!(parse_mutants_json(output), Some((4, 6)));
+    }
+
+    #[test]
+    fn parse_mutants_json_picks_last_json_line() {
+        // 複数の JSON 行があれば末尾（最新）を使う。
+        let output = "{\"total_mutants\":3,\"caught\":1}\n{\"total_mutants\":6,\"caught\":4}\n";
+        assert_eq!(parse_mutants_json(output), Some((4, 6)));
+    }
+
+    #[test]
+    fn parse_mutants_json_invalid_returns_none() {
+        // run_rust_mutation はここで None になると黙って (0, 0) にする。
+        assert_eq!(parse_mutants_json(""), None);
+        assert_eq!(parse_mutants_json("just plain text\n"), None);
+        // 必須キー欠落
+        assert_eq!(parse_mutants_json("{\"total_mutants\":6}"), None);
+        assert_eq!(parse_mutants_json("{\"caught\":4}"), None);
+        // 型不一致（文字列・小数・null）
+        assert_eq!(
+            parse_mutants_json("{\"total_mutants\":\"6\",\"caught\":4}"),
+            None
+        );
+        assert_eq!(
+            parse_mutants_json("{\"total_mutants\":6.5,\"caught\":4}"),
+            None
+        );
+        assert_eq!(
+            parse_mutants_json("{\"total_mutants\":null,\"caught\":4}"),
+            None
+        );
+        // 負数（usize に入らない）
+        assert_eq!(
+            parse_mutants_json("{\"total_mutants\":6,\"caught\":-1}"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_mutants_json_skips_broken_json_line() {
+        // 末尾の壊れた `{` 行を飛ばし、手前の有効行を拾う。
+        let output = "{\"total_mutants\":6,\"caught\":4}\n{\"total_mutants\":6,\"cau\n";
+        assert_eq!(parse_mutants_json(output), Some((4, 6)));
+    }
+
+    #[test]
+    fn parse_mutants_json_caught_exceeding_total_is_returned_as_is() {
+        // 現状の挙動の固定であり、仕様ではない。
+        // caught > total_mutants でもクランプせずそのまま返る。
+        // 将来クランプ等を入れる場合はこのテストを更新してよい。
+        let output = "{\"total_mutants\":3,\"caught\":5}\n";
+        assert_eq!(parse_mutants_json(output), Some((5, 3)));
+    }
 }
 
 #[cfg(test)]
