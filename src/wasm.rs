@@ -169,9 +169,42 @@ fn classify_error(e: &wasmtime::Error, elapsed_ms: u64) -> StageOutcome {
     }
 }
 
+/// `--wasm-max-memory-mb` の上限（MB）。
+pub const MAX_WASM_MEMORY_MB: usize = 4096;
+
+/// clap 用: `--wasm-max-memory-mb` を 1..=MAX_WASM_MEMORY_MB に検証する（バイト換算のオーバーフロー防止）。
+pub fn parse_wasm_memory_mb(s: &str) -> Result<usize, String> {
+    let n: usize = s
+        .parse()
+        .map_err(|_| format!("`{s}` は整数ではありません"))?;
+    if (1..=MAX_WASM_MEMORY_MB).contains(&n) {
+        Ok(n)
+    } else {
+        Err(format!(
+            "Wasm メモリ上限は 1〜{MAX_WASM_MEMORY_MB} MB で指定してください（指定値: {n}）"
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_wasm_memory_mb_bounds() {
+        assert!(parse_wasm_memory_mb("0").is_err());
+        assert_eq!(parse_wasm_memory_mb("1"), Ok(1));
+        assert_eq!(
+            parse_wasm_memory_mb(&MAX_WASM_MEMORY_MB.to_string()),
+            Ok(MAX_WASM_MEMORY_MB)
+        );
+        assert!(parse_wasm_memory_mb(&(MAX_WASM_MEMORY_MB + 1).to_string()).is_err());
+        // 2^44 MB は `* 1024 * 1024` で usize が wrap して 0 になる値、MAX は debug で panic する値。
+        assert!(parse_wasm_memory_mb("17592186044416").is_err());
+        assert!(parse_wasm_memory_mb(&usize::MAX.to_string()).is_err());
+        assert!(parse_wasm_memory_mb("abc").is_err());
+        assert!(parse_wasm_memory_mb("-1").is_err());
+    }
 
     const ONE_MB: usize = 1024 * 1024;
     const T: Duration = Duration::from_secs(10);
