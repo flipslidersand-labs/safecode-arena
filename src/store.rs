@@ -201,6 +201,19 @@ pub fn find_regressions(
     out
 }
 
+/// 前回 run に存在し、今回は評価に失敗して脱落した候補 ID を返す（ID 昇順）。
+/// 指定されなかっただけの候補は `failed` に含まれないため対象外。
+pub fn find_dropped(previous: &HashMap<String, f64>, failed: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = failed
+        .iter()
+        .filter(|id| previous.contains_key(*id))
+        .cloned()
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,5 +436,13 @@ mod tests {
         assert_eq!(m.get("new"), Some(&30.0));
         // 古い行は前回値なし扱い → 現在が低くても回帰にならない
         assert!(find_regressions(&m, &[eval("old", 0.0)], 1.0).is_empty());
+    }
+
+    #[test]
+    fn find_dropped_returns_only_failed_ids_present_in_previous() {
+        let prev: HashMap<String, f64> = [("a".to_string(), 80.0), ("b".to_string(), 70.0)].into();
+        let failed = vec!["c".to_string(), "b".to_string()];
+        assert_eq!(find_dropped(&prev, &failed), vec!["b".to_string()]);
+        assert!(find_dropped(&prev, &[]).is_empty());
     }
 }
