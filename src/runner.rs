@@ -9,19 +9,79 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 use wait_timeout::ChildExt;
 
-/// キャプチャ先ファイルの全文を読み取る。
-fn read_all(mut file: std::fs::File) -> String {
-    let mut buf = String::new();
+/// 取り込む出力の最大バイト数。
+///
+/// 候補コードが改行なしで大量に出力してもメモリを使い切らないための上限。
+/// cargo / clippy の通常出力や `cargo audit --json` は数百 KiB 程度に収まるため、
+/// 4 MiB あれば実用上は全文が入る。超えた場合は先頭と末尾を半分ずつ残す。
+/// 先頭は最初のエラーや警告、末尾はコンパイラやテストの最終的な失敗理由
+/// (summary 行や panic) が出やすいので、どちらも落とさない。
+const MAX_CAPTURE_BYTES: usize = 4 * 1024 * 1024;
+
+/// 失敗理由 1 行あたりの最大文字数。改行なしの長大な出力を表示用に切り詰める。
+const MAX_LINE_CHARS: usize = 500;
+
+/// 出力ファイルの許容サイズ(バイト)。超えたら子を kill して中断する。
+///
+/// 読み込み側の上限だけではディスクが膨らむため、タイムアウト前でも打ち切る。
+/// RLIMIT_FSIZE は cargo のビルド成果物の書き込みにも効いてしまうので使わない。
+const MAX_OUTPUT_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// 出力ファイルのサイズを確認する間隔。
+const POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// キャプチャ先ファイルを上限付きで読み取る。
+///
+/// 上限を超える場合は先頭と末尾を残し、間に切り詰めの印を入れる。
+/// UTF-8 の途中で切れても lossy 変換で安全に扱う。
+fn read_bounded(mut file: std::fs::File, max_bytes: usize) -> String {
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
     let _ = file.seek(SeekFrom::Start(0));
-    let _ = file.read_to_string(&mut buf);
-    buf
+    if len <= max_bytes as u64 {
+        let mut buf = Vec::new();
+        let _ = file.read_to_end(&mut buf);
+        return String::from_utf8_lossy(&buf).into_owned();
+    }
+    let half = max_bytes / 2;
+    let mut head = vec![0u8; half];
+    let mut tail = vec![0u8; half];
+    let head_ok = file.read_exact(&mut head).is_ok();
+    let tail_ok =
+        file.seek(SeekFrom::Start(len - half as u64)).is_ok() && file.read_exact(&mut tail).is_ok();
+    if !head_ok {
+        head.clear();
+    }
+    if !tail_ok {
+        tail.clear();
+    }
+    format!(
+        "{}\n…(出力が {} KiB を超えたため中間 {} KiB を切り詰め)…\n{}",
+        String::from_utf8_lossy(&head),
+        max_bytes / 1024,
+        (len - 2 * half as u64) / 1024,
+        String::from_utf8_lossy(&tail)
+    )
 }
 
-/// 失敗理由の表示用に先頭 20 行へ要約する。
+/// キャプチャ先ファイルの内容を上限付きで読み取る。
+fn read_all(file: std::fs::File) -> String {
+    read_bounded(file, MAX_CAPTURE_BYTES)
+}
+
+/// 1 行を `MAX_LINE_CHARS` 文字に切り詰める。
+fn clip_line(line: &str) -> String {
+    match line.char_indices().nth(MAX_LINE_CHARS) {
+        Some((idx, _)) => format!("{}…(行を {MAX_LINE_CHARS} 文字で切り詰め)", &line[..idx]),
+        None => line.to_string(),
+    }
+}
+
+/// 失敗理由の表示用に先頭 20 行へ要約する。各行は長さも切り詰める。
 fn summarize(file: std::fs::File) -> String {
     read_all(file)
         .lines()
         .take(20)
+        .map(clip_line)
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -108,6 +168,15 @@ pub fn run_stage_capture(
     command: std::process::Command,
     limit: Duration,
 ) -> (StageOutcome, String) {
+    run_stage_capture_with(label, command, limit, MAX_OUTPUT_FILE_BYTES)
+}
+
+fn run_stage_capture_with(
+    label: &str,
+    command: std::process::Command,
+    limit: Duration,
+    max_file_bytes: u64,
+) -> (StageOutcome, String) {
     let err_file = match tempfile::tempfile() {
         Ok(f) => f,
         Err(e) => {
@@ -163,7 +232,32 @@ pub fn run_stage_capture(
         }
     };
 
-    let outcome = match child.wait_timeout(limit) {
+    // 出力ファイルが肥大化していないか定期的に確認しながら待つ。
+    let deadline = start + limit;
+    let waited = loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match child.wait_timeout(remaining.min(POLL_INTERVAL)) {
+            Ok(None) => {
+                if err_file.metadata().map(|m| m.len()).unwrap_or(0) > max_file_bytes {
+                    kill_group(&mut child);
+                    break Err(None);
+                }
+                if remaining <= POLL_INTERVAL {
+                    break Ok(None);
+                }
+            }
+            Ok(Some(status)) => break Ok(Some(status)),
+            Err(e) => break Err(Some(e)),
+        }
+    };
+
+    let outcome = match waited {
+        Err(None) => StageOutcome::Failed {
+            detail: format!(
+                "{label}: 出力が {} MiB を超えたため中断",
+                max_file_bytes / (1024 * 1024)
+            ),
+        },
         Ok(Some(status)) => {
             let elapsed = start.elapsed();
             if status.success() {
@@ -186,7 +280,7 @@ pub fn run_stage_capture(
                 limit_ms: limit.as_millis() as u64,
             }
         }
-        Err(e) => {
+        Err(Some(e)) => {
             kill_group(&mut child);
             StageOutcome::Failed {
                 detail: format!("{label}: 待機失敗: {e}"),
@@ -352,5 +446,60 @@ mod tests {
     fn nonzero_exit_fails() {
         let outcome = run_stage("false", Command::new("false"), Duration::from_secs(5));
         assert!(matches!(outcome, StageOutcome::Failed { .. }));
+    }
+
+    #[test]
+    fn huge_single_line_output_is_bounded() {
+        // 改行なしで 12 MiB 出力する。取り込み・要約ともに上限内に収まること。
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "head -c 12582912 /dev/zero | tr '\\0' a; exit 1"]);
+        let (outcome, captured) = run_stage_capture("big", cmd, Duration::from_secs(30));
+        assert!(
+            captured.len() <= MAX_CAPTURE_BYTES + 1024,
+            "{}",
+            captured.len()
+        );
+        assert!(captured.contains("切り詰め"));
+        let StageOutcome::Failed { detail } = outcome else {
+            panic!("Failed を期待");
+        };
+        assert!(
+            detail.chars().count() <= 20 * (MAX_LINE_CHARS + 64),
+            "{}",
+            detail.len()
+        );
+    }
+
+    #[test]
+    fn runaway_output_is_killed_before_timeout() {
+        // 上限 1 MiB で、無限出力する子を止められること(タイムアウトの 30 秒より十分早い)。
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "yes"]);
+        let start = Instant::now();
+        let (outcome, captured) =
+            run_stage_capture_with("yes", cmd, Duration::from_secs(30), 1024 * 1024);
+        assert!(start.elapsed() < Duration::from_secs(15));
+        let StageOutcome::Failed { detail } = outcome else {
+            panic!("Failed を期待: {outcome:?}");
+        };
+        assert!(detail.contains("中断"), "{detail}");
+        assert!(captured.len() <= MAX_CAPTURE_BYTES + 1024);
+    }
+
+    #[test]
+    fn truncation_does_not_split_utf8() {
+        let mut f = tempfile::tempfile().unwrap();
+        std::io::Write::write_all(&mut f, "あ".repeat(1000).as_bytes()).unwrap();
+        // 3 バイト文字の途中で切れる上限(奇数)でも panic せず、印が付く。
+        let s = read_bounded(f, 101);
+        assert!(s.contains("切り詰め"));
+        assert!(s.starts_with('あ') && s.ends_with('あ') || s.contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn clip_line_limits_chars() {
+        let long = "x".repeat(MAX_LINE_CHARS + 10);
+        assert!(clip_line(&long).contains("切り詰め"));
+        assert_eq!(clip_line("short"), "short");
     }
 }
