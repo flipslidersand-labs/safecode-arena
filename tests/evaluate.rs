@@ -556,3 +556,63 @@ fn db_previous_candidate_dropped_by_eval_error_fails() {
         .assert()
         .success();
 }
+
+#[test]
+fn evaluate_html_format_writes_file_with_out() {
+    let cand = write_candidate("ok", "pub fn add(a: i32, b: i32) -> i32 { a + b }\n");
+    let work = tempfile::tempdir().unwrap();
+    let out = work.path().join("report.html");
+
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(cand.path())
+        .args(["--format", "html", "--out", out.to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("レポートを書き出しました"));
+
+    let html = std::fs::read_to_string(&out).unwrap();
+    assert!(html.contains("<!DOCTYPE html>"), "html: {html}");
+}
+
+#[test]
+fn evaluate_out_to_missing_directory_fails() {
+    let cand = write_candidate("ok", "pub fn add(a: i32, b: i32) -> i32 { a + b }\n");
+    let work = tempfile::tempdir().unwrap();
+    let out = work.path().join("no-such-dir").join("report.md");
+
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(cand.path())
+        .args(["--out", out.to_str().unwrap()])
+        .assert()
+        .failure();
+    assert!(!out.exists());
+}
+
+#[test]
+fn history_with_empty_db_reports_no_runs() {
+    let work = tempfile::tempdir().unwrap();
+    let db = work.path().join("empty.db");
+
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("history")
+        .args(["--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("run 履歴はありません"));
+}
+
+#[test]
+fn generate_with_missing_spec_fails_before_calling_llm() {
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("generate")
+        .arg("/no/such/spec.md")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("spec ファイルの読込に失敗"));
+}
