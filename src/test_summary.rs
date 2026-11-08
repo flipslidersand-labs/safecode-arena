@@ -8,6 +8,18 @@
 //! `output` には stdout と stderr を連結したものを渡すこと
 //! (cargo は `Running` を stderr、`test result:` を stdout に出す。node --test は pipeline で 1>&2 される)。
 //!
+//! ## 既知の制約 (PR2 へ持ち越し)
+//! 出力パーサだけでは区別できない偽装があり、PR2 側のコマンド変更とセットで塞ぐ前提。
+//! - Node: `node --test c.test.js` はテストファイル自体が 1 件の合格として数えられ、
+//!   `process.exit(0)` でも `Ok { passed: 1 }` になる。PR2 で `--test-isolation=none` を必須にする
+//!   (付けると結果行が出ず `NoSummary` になることをレビューで確認済み)。
+//! - Go: `func init() { os.Exit(0) }` は go test 自身が `ok` を出し `Ok` になる。
+//!   PR2 で `-v` を付け、`ok` のパッケージに `=== RUN` 行があることを必須にする。
+//! - pytest: `pytest.exit(.., returncode=0)` は `Exit` 行を検出して `Failed` にする。
+//!   正規の 0 件と区別できるよう [`TestVerdict::is_zero_run`] を用意した(0 件を許すかは PR2 が判断)。
+//! - Rust: `harness = false` の結合テストは結果行が出ず `NoSummary` になる。
+//!   `pipeline.rs` の prop_test(`cargo test` 2 回目の呼び出し)も未配線で、PR2 で別途配線が必要。
+//!
 //! `Ok { passed }` の意味は言語ごとに異なる: Rust/Python/JS/TS はテスト件数、Go はテストが走った
 //! パッケージ数(`go test` の `ok` 行数。`-v` なしでは件数が出ないため)。
 
@@ -21,6 +33,13 @@ pub enum TestVerdict {
     Failed { reason: String },
     /// 期待する結果行が見つからない(途中終了・偽装の疑い)。
     NoSummary,
+}
+
+impl TestVerdict {
+    /// 結果行はあるが 0 件実行だった場合 true(許可するかは呼び出し側が決める)。
+    pub fn is_zero_run(&self) -> bool {
+        matches!(self, TestVerdict::Ok { passed: 0 })
+    }
 }
 
 /// 言語に応じてテスト出力を解析する。
@@ -89,7 +108,11 @@ fn parse_cargo(text: &str) -> TestVerdict {
     }
     if failed > 0 || bad_status {
         return TestVerdict::Failed {
-            reason: format!("cargo test: {failed} 件失敗"),
+            reason: if failed > 0 {
+                format!("cargo test: {failed} 件失敗")
+            } else {
+                "cargo test: 結果行が ok. 以外".to_string()
+            },
         };
     }
     if results == 0 || results != launched {
@@ -107,6 +130,15 @@ fn parse_pytest(text: &str) -> TestVerdict {
         dur.parse::<f64>().ok()?;
         Some(head.to_string())
     });
+    // pytest.exit() / INTERNALERROR は returncode=0 でも 0 件実行に見えるため失敗扱いにする。
+    if text
+        .lines()
+        .any(|l| l.contains("_pytest.outcomes.Exit") || l.starts_with("INTERNALERROR>"))
+    {
+        return TestVerdict::Failed {
+            reason: "pytest: Exit / INTERNALERROR を検出".to_string(),
+        };
+    }
     let Some(head) = summary else {
         return TestVerdict::NoSummary;
     };
@@ -351,5 +383,40 @@ test result: \x1b[32mok\x1b[0m. 4 passed; 0 failed; 0 ignored\n";
             parse_test_summary(Language::TypeScript, "ok\n"),
             TestVerdict::NoSummary
         );
+    }
+
+    // 偽装ケースの実出力(レビュー時に採取)を固定する。
+    #[test]
+    fn real_output_pytest_exit_is_failed() {
+        let o = "\nno tests ran in 0.12s\n!!!!!!!!!!!!!!!!!!!!!!!!!!! _pytest.outcomes.Exit: x !!!!!!!!!!!!!!!!!!!!!!!!!!!\n";
+        assert!(failed(&parse_test_summary(Language::Python, o)));
+        assert!(parse_test_summary(Language::Python, "no tests ran in 0.00s\n").is_zero_run());
+    }
+
+    #[test]
+    fn real_output_known_limits() {
+        // Node: process.exit(0) でもファイル自体が 1 pass になる(PR2 で --test-isolation=none)。
+        let node =
+            "✔ c.test.js (48.6ms)\nℹ tests 1\nℹ suites 0\nℹ pass 1\nℹ fail 0\nℹ cancelled 0\n";
+        assert_eq!(
+            parse_test_summary(Language::JavaScript, node),
+            TestVerdict::Ok { passed: 1 }
+        );
+        // Go: init() の os.Exit(0) は ok 行が出る(PR2 で -v と === RUN を必須にする)。
+        let go = "?   \tex/empty\t[no test files]\nok  \tex\t0.002s\nok  \tex/sub\t0.002s\n";
+        assert_eq!(
+            parse_test_summary(Language::Go, go),
+            TestVerdict::Ok { passed: 2 }
+        );
+    }
+
+    #[test]
+    fn rust_bad_status_reason_without_count() {
+        let o = "     Running unittests src/lib.rs (a)\n\
+test result: interrupted. 1 passed; 0 failed\n";
+        match parse_test_summary(Language::Rust, o) {
+            TestVerdict::Failed { reason } => assert!(!reason.contains("0 件失敗")),
+            v => panic!("{v:?}"),
+        }
     }
 }
