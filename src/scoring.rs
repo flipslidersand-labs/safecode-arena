@@ -227,13 +227,21 @@ pub fn assign_performance_each(evals: &mut [Evaluation], rubrics: &[Rubric]) {
         rubrics.len(),
         "evals と rubrics の長さが不一致"
     );
-    // bench_ns が 1 件でもあれば全候補で bench_ns を優先する。
-    // bench_ns がない候補は 0 扱い（最遅）ではなく None 扱い（採点対象外）。
-    let has_any_bench = evals.iter().any(|e| e.bench_ns.is_some());
+    // compile と test が通った候補が全員 bench_ns を持つときだけ bench_ns で比較する
+    // （compile 失敗の候補は bench_ns=None になるため判定から除く）。
+    // 通った候補に bench 付きと無しが混在するときは尺度が違うため、全員 compile+test 時間で
+    // 比較する（bench 無しの候補を 0 点にしない）。
+    // 注意: 時間比較モードでは bench 候補が Criterion 依存のビルド込みで不利になり得る。
+    // また bench 計測失敗（解析不能/タイムアウト）の 1 件で全員が時間比較に切り替わる。
+    let mut passed_iter = evals
+        .iter()
+        .filter(|e| e.compile.is_passed() && e.test.is_passed())
+        .peekable();
+    let use_bench = passed_iter.peek().is_some() && passed_iter.all(|e| e.bench_ns.is_some());
     let times: Vec<Option<u64>> = evals
         .iter()
         .map(|e| {
-            if has_any_bench {
+            if use_bench {
                 // compile/test が通っていない候補は bench が速くても採点対象外
                 if e.compile.is_passed() && e.test.is_passed() {
                     e.bench_ns
@@ -678,6 +686,68 @@ mod tests {
         assert_eq!(evals[1].axes.performance, r.performance);
     }
 
+    fn bench_eval(id: &str, bench: Option<u64>, c: u64, test: StageOutcome) -> Evaluation {
+        let mut e = perf_eval(c);
+        e.candidate_id = id.into();
+        e.bench_ns = bench;
+        e.test = test;
+        e
+    }
+
+    #[test]
+    fn mixed_bench_and_no_bench_compares_by_time() {
+        let r = Rubric::default();
+        // A: bench なし・速い。B: bench あり・遅い。尺度が違うので時間で比べる。
+        let mut evals = vec![
+            bench_eval("a", None, 10, passed(0)),
+            bench_eval("b", Some(5), 100, passed(0)),
+        ];
+        assign_performance(&mut evals, &r);
+        assert_eq!(evals[0].axes.performance, r.performance);
+        assert!((evals[1].axes.performance - r.performance * 0.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn all_with_bench_still_compares_by_bench_ns() {
+        let r = Rubric::default();
+        let mut evals = vec![
+            bench_eval("a", Some(400), 10, passed(0)),
+            bench_eval("b", Some(100), 100, passed(0)),
+        ];
+        assign_performance(&mut evals, &r);
+        assert!((evals[0].axes.performance - r.performance * 0.25).abs() < 1e-9);
+        assert_eq!(evals[1].axes.performance, r.performance);
+    }
+
+    #[test]
+    fn mixed_bench_still_zero_for_failed_candidates() {
+        let r = Rubric::default();
+        let mut evals = vec![
+            bench_eval("a", None, 10, passed(0)),
+            bench_eval("b", Some(5), 100, failed()),
+        ];
+        assign_performance(&mut evals, &r);
+        assert_eq!(evals[0].axes.performance, r.performance);
+        assert_eq!(evals[1].axes.performance, 0.0);
+    }
+
+    #[test]
+    fn all_passed_have_bench_plus_compile_failed_uses_bench() {
+        let r = Rubric::default();
+        // compile 失敗の候補は実際には bench_ns=None。通った候補が全員 bench 付きなら bench で比較。
+        let mut broken = bench_eval("broken", None, 1, passed(0));
+        broken.compile = failed();
+        let mut evals = vec![
+            bench_eval("a", Some(100), 500, passed(0)),
+            bench_eval("b", Some(400), 10, passed(0)),
+            broken,
+        ];
+        assign_performance(&mut evals, &r);
+        assert_eq!(evals[0].axes.performance, r.performance);
+        assert!((evals[1].axes.performance - r.performance * 0.25).abs() < 1e-9);
+        assert_eq!(evals[2].axes.performance, 0.0);
+    }
+
     fn perf_eval(ms: u64) -> Evaluation {
         Evaluation {
             candidate_id: "c".into(),
@@ -982,29 +1052,32 @@ mod tests {
     }
 
     #[test]
-    fn performance_mixed_bench_ns_none_candidate_gets_zero() {
+    fn performance_mixed_bench_ns_none_candidate_compared_by_time() {
         let r = Rubric::default();
-        // bench あり 1 件 → 全員 bench_ns 基準。bench なし候補は compile+test が
-        // 速くても 0（採点対象外）。
+        // bench 付きと無しが混在 → 全員 compile+test 時間で比較。
+        // bench なし候補は速いので満点、bench あり候補は 500/1 の比。
         let mut with_bench = perf_eval(500);
         with_bench.bench_ns = Some(1000);
         let without = perf_eval(1);
         let mut evals = vec![with_bench, without];
         assign_performance(&mut evals, &r);
-        assert_eq!(evals[0].axes.performance, r.performance);
-        assert_eq!(evals[1].axes.performance, 0.0);
+        assert!((evals[0].axes.performance - r.performance / 500.0).abs() < 1e-9);
+        assert_eq!(evals[1].axes.performance, r.performance);
     }
 
     #[test]
-    fn performance_bench_only_on_failed_candidate_zeroes_everyone() {
+    fn performance_bench_only_on_failed_candidate_uses_time_for_others() {
         let r = Rubric::default();
-        // bench を持つのが compile 失敗の候補だけ → 全員 None → 全員 0
+        // 失敗候補だけが bench_ns を持つ形（test 失敗時も bench を実行する pipeline.rs:481 で起こり得る）。
+        // 通過候補は bench_ns=None なので全員を時間で比較する。
+        // 失敗候補は 0、もう一方は唯一の採点対象で満点。
         let mut broken = perf_eval(1);
         broken.compile = failed();
         broken.bench_ns = Some(5);
         let mut evals = vec![broken, perf_eval(1)];
         assign_performance(&mut evals, &r);
-        assert!(evals.iter().all(|e| e.axes.performance == 0.0));
+        assert_eq!(evals[0].axes.performance, 0.0);
+        assert_eq!(evals[1].axes.performance, r.performance);
     }
 
     #[test]
