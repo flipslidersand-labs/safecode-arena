@@ -143,3 +143,131 @@ pub struct Evaluation {
     /// 0.0〜100.0 の総合スコア（= axes.total()）。
     pub score: f64,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ALL: [Language; 5] = [
+        Language::Rust,
+        Language::Python,
+        Language::Go,
+        Language::JavaScript,
+        Language::TypeScript,
+    ];
+
+    #[test]
+    fn supported_extensions_all_map_to_some() {
+        for ext in Language::SUPPORTED_EXTENSIONS {
+            assert!(Language::try_from_extension(ext).is_some(), "{ext}");
+        }
+    }
+
+    #[test]
+    fn supported_extensions_map_to_distinct_languages() {
+        let langs: Vec<_> = Language::SUPPORTED_EXTENSIONS
+            .iter()
+            .map(|e| Language::try_from_extension(e).unwrap())
+            .collect();
+        assert_eq!(langs, ALL.to_vec());
+    }
+
+    #[test]
+    fn try_from_extension_is_case_insensitive() {
+        assert_eq!(Language::try_from_extension("RS"), Some(Language::Rust));
+        assert_eq!(Language::try_from_extension("Py"), Some(Language::Python));
+        assert_eq!(
+            Language::try_from_extension("TS"),
+            Some(Language::TypeScript)
+        );
+    }
+
+    #[test]
+    fn try_from_extension_rejects_unknown_and_malformed() {
+        for ext in ["", "txt", "rs2", ".rs", "rs ", " rs", "r s", "\trs", "rs\n"] {
+            assert_eq!(Language::try_from_extension(ext), None, "{ext:?}");
+        }
+    }
+
+    #[test]
+    fn from_extension_known_matches_try_from() {
+        for ext in Language::SUPPORTED_EXTENSIONS {
+            assert_eq!(
+                Some(Language::from_extension(ext)),
+                Language::try_from_extension(ext)
+            );
+        }
+    }
+
+    #[test]
+    fn from_extension_falls_back_to_rust() {
+        assert_eq!(Language::from_extension("unknown"), Language::Rust);
+        assert_eq!(Language::from_extension(""), Language::Rust);
+    }
+
+    #[test]
+    fn name_matches_serde_lowercase_rename() {
+        for lang in ALL {
+            let json = serde_json::to_string(&lang).unwrap();
+            assert_eq!(json, format!("\"{}\"", lang.name()));
+        }
+    }
+
+    #[test]
+    fn name_round_trips_through_serde() {
+        for lang in ALL {
+            let json = format!("\"{}\"", lang.name());
+            assert_eq!(serde_json::from_str::<Language>(&json).unwrap(), lang);
+        }
+    }
+
+    #[test]
+    fn duration_ms_is_some_only_for_passed() {
+        assert_eq!(
+            StageOutcome::Passed { duration_ms: 42 }.duration_ms(),
+            Some(42)
+        );
+        assert_eq!(
+            StageOutcome::Passed { duration_ms: 0 }.duration_ms(),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn duration_ms_is_none_for_non_passed() {
+        let others = [
+            StageOutcome::Failed { detail: "x".into() },
+            StageOutcome::TimedOut { limit_ms: 1000 },
+            StageOutcome::Skipped,
+        ];
+        for o in others {
+            assert_eq!(o.duration_ms(), None, "{o:?}");
+        }
+    }
+
+    #[test]
+    fn is_passed_only_for_passed() {
+        assert!(StageOutcome::Passed { duration_ms: 1 }.is_passed());
+        assert!(!StageOutcome::Skipped.is_passed());
+        assert!(!StageOutcome::TimedOut { limit_ms: 1 }.is_passed());
+    }
+
+    #[test]
+    fn axis_scores_total_sums_all_six_axes() {
+        let a = AxisScores {
+            correctness: 1.0,
+            security: 2.0,
+            performance: 4.0,
+            maintainability: 8.0,
+            resource_usage: 16.0,
+            reasoning: 32.0,
+        };
+        // 2 の冪なので、どの軸が欠けても/重複しても合計が一致しない。
+        assert_eq!(a.total(), 63.0);
+    }
+
+    #[test]
+    fn axis_scores_default_total_is_zero() {
+        assert_eq!(AxisScores::default().total(), 0.0);
+    }
+}
