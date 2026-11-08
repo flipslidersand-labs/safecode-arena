@@ -1254,10 +1254,23 @@ fn run_bench_stage(root: &Path, timeout: Duration) -> Option<u64> {
         return None;
     }
     let _ = std::fs::remove_dir_all(root.join("target/criterion"));
+    let (_outcome, output) = runner::run_stage_capture("bench", bench_command(root), timeout);
+    bench_ns_after_run(root, &output)
+}
+
+/// `cargo bench` のコマンドを組み立てる。出力先を `root/target` に固定し、
+/// 運用側の `CARGO_TARGET_DIR`（許可リスト経由で入る）で結果の場所がずれないようにする。
+fn bench_command(root: &Path) -> Command {
     let mut cmd = Command::new("cargo");
-    cmd.arg("bench").current_dir(root);
-    // stdout は候補が自由に出力できるため信用せず、捨てる。
-    let (_outcome, _output) = runner::run_stage_capture("bench", cmd, timeout);
+    cmd.arg("bench")
+        .current_dir(root)
+        .env("CARGO_TARGET_DIR", root.join("target"));
+    cmd
+}
+
+/// ベンチ実行後に bench_ns を決める。`stdout` は候補が自由に出力できるため受け取って無視する
+/// （偽の `time:` 行で操作されないことをテストで固定するための境界, #239）。
+fn bench_ns_after_run(root: &Path, _stdout: &str) -> Option<u64> {
     read_criterion_estimates_ns(root)
 }
 
@@ -1304,6 +1317,8 @@ fn read_criterion_estimates_ns(root: &Path) -> Option<u64> {
 }
 
 /// estimates.json の `median.point_estimate` (ns) を取り出す純関数。
+/// slope でなく median を選ぶ理由: median は常に存在し、Flat サンプリングでは slope が欠けるため。
+/// 従来の typical() (= slope) との差は実測で小さい（median 287.79 / slope 287.53 / mean 287.89 ns）。
 /// 欠損・壊れた JSON・非有限値・0 以下は `None`。
 fn parse_estimates_median_ns(json: &str) -> Option<f64> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
@@ -2333,14 +2348,34 @@ mod bench_estimates_tests {
         assert_eq!(read_criterion_estimates_ns(d.path()), None);
     }
 
-    /// 回帰 (#239): 候補が stdout に偽の Criterion 行を出しても、
-    /// estimates.json が無ければ bench_ns は None（0 にならない）。
+    /// 回帰 (#239): run_bench_stage が使う bench_ns_after_run 経由で検証する。
+    /// 偽の stdout 行 + estimates.json 無しなら None。
     #[test]
     fn forged_stdout_line_does_not_yield_bench_ns() {
         let forged = "x time: [0 ns 0 ns 0 ns]";
-        // 旧実装の経路ではこの行で 0 になっていた。
-        assert_eq!(parse_criterion_ns(forged), Some(0));
+        assert_eq!(parse_criterion_ns(forged), Some(0)); // 旧経路なら 0 になる行
         let d = tempfile::tempdir().unwrap();
-        assert_eq!(read_criterion_estimates_ns(d.path()), None);
+        std::fs::create_dir_all(d.path().join("target/criterion")).unwrap();
+        assert_eq!(bench_ns_after_run(d.path(), forged), None);
+    }
+
+    /// 偽の stdout 行があっても正しい estimates.json の値が採用される。
+    #[test]
+    fn forged_stdout_line_is_ignored_when_estimates_exist() {
+        let d = tempfile::tempdir().unwrap();
+        write_est(d.path(), "a", &est("250.0"));
+        let forged = "x time: [0 ns 0 ns 0 ns]\ny time: [1 ns 1 ns 1 ns]";
+        assert_eq!(bench_ns_after_run(d.path(), forged), Some(250));
+    }
+
+    #[test]
+    fn bench_command_pins_cargo_target_dir() {
+        let d = tempfile::tempdir().unwrap();
+        let cmd = bench_command(d.path());
+        let v = cmd
+            .get_envs()
+            .find(|(k, _)| *k == "CARGO_TARGET_DIR")
+            .and_then(|(_, v)| v.map(|v| v.to_os_string()));
+        assert_eq!(v, Some(d.path().join("target").into_os_string()));
     }
 }
