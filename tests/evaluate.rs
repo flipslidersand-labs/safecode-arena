@@ -734,6 +734,17 @@ fn python_noqa_file_directive_does_not_hide_ruff_findings() {
 #[test]
 #[ignore = "eslint(v9+) と node が必要。実行環境依存のため ignored (#237)"]
 fn js_eslint_disable_comment_does_not_hide_findings() {
+    // CI(ignored-tests.yml)には eslint が無い。パイプラインと同じ解決(PATH 上の `eslint`)で
+    // 実行できなければ、skipped 表示を誤検知せず明示してスキップする。
+    let eslint_ok = std::process::Command::new("eslint")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !eslint_ok {
+        eprintln!("eslint 未導入のためスキップ: js_eslint_disable_comment_does_not_hide_findings");
+        return;
+    }
     let mut f = tempfile::Builder::new()
         .prefix("sup")
         .suffix(".js")
