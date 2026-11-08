@@ -139,6 +139,26 @@ struct TomlConfig {
 }
 
 impl Rubric {
+    /// 各軸の重みが有限かつ 0 以上であることを検証する（`where_` はエラー表示用のセクション名）。
+    fn validate(&self, where_: &str) -> Result<()> {
+        let axes = [
+            ("correctness", self.correctness),
+            ("security", self.security),
+            ("performance", self.performance),
+            ("maintainability", self.maintainability),
+            ("resource_usage", self.resource_usage),
+            ("reasoning", self.reasoning),
+        ];
+        for (name, v) in axes {
+            if !v.is_finite() || v < 0.0 {
+                anyhow::bail!(
+                    "重み {where_}.{name} は 0 以上の有限値で指定してください（指定値: {v}）"
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// 後方互換: グローバルルーブリックを読む。
     pub fn load(explicit: Option<&str>) -> Result<Rubric> {
         Ok(Config::load(explicit)?.default)
@@ -182,14 +202,41 @@ impl Config {
         let w = parsed.weights.unwrap_or_default();
         let resolve = |p: &Option<PartialRubric>| p.as_ref().map(|p| p.apply(default_rubric));
 
-        Ok(Config {
+        let config = Config {
             default: default_rubric,
             rust: resolve(&w.rust),
             python: resolve(&w.python),
             go: resolve(&w.go),
             javascript: resolve(&w.javascript),
             typescript: resolve(&w.typescript),
-        })
+        };
+        config.default.validate("weights")?;
+        for (lang, r) in [
+            ("rust", &config.rust),
+            ("python", &config.python),
+            ("go", &config.go),
+            ("javascript", &config.javascript),
+            ("typescript", &config.typescript),
+        ] {
+            if let Some(r) = r {
+                r.validate(&format!("weights.{lang}"))?;
+            }
+        }
+        Ok(config)
+    }
+}
+
+/// clap 用: `--regression-threshold` を 0 以上の有限値に検証する。
+pub fn parse_regression_threshold(s: &str) -> Result<f64, String> {
+    let v: f64 = s
+        .parse()
+        .map_err(|_| format!("`{s}` は数値ではありません"))?;
+    if v.is_finite() && v >= 0.0 {
+        Ok(v)
+    } else {
+        Err(format!(
+            "回帰しきい値は 0 以上の有限値で指定してください（指定値: {s}）"
+        ))
     }
 }
 
@@ -216,6 +263,49 @@ mod tests {
         let r = Rubric::load(Some(f.path().to_str().unwrap())).unwrap();
         assert_eq!(r.correctness, 70.0);
         assert_eq!(r.security, 10.0);
+    }
+
+    fn load_weights_err(body: &str) -> String {
+        let mut f = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
+        writeln!(f, "{body}").unwrap();
+        format!(
+            "{:#}",
+            Config::load(Some(f.path().to_str().unwrap())).unwrap_err()
+        )
+    }
+
+    #[test]
+    fn nan_weight_is_rejected_with_axis_name() {
+        let e = load_weights_err("[weights]\ncorrectness = nan");
+        assert!(e.contains("correctness"), "{e}");
+    }
+
+    #[test]
+    fn infinite_and_negative_weights_are_rejected() {
+        assert!(load_weights_err("[weights]\nsecurity = inf").contains("security"));
+        assert!(load_weights_err("[weights]\nperformance = -1").contains("performance"));
+    }
+
+    #[test]
+    fn invalid_lang_weight_is_rejected_with_section() {
+        let e = load_weights_err("[weights.go]\nreasoning = nan");
+        assert!(e.contains("reasoning") && e.contains("go"), "{e}");
+    }
+
+    #[test]
+    fn zero_weight_is_accepted() {
+        let mut f = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
+        writeln!(f, "[weights]\nreasoning = 0").unwrap();
+        assert!(Config::load(Some(f.path().to_str().unwrap())).is_ok());
+    }
+
+    #[test]
+    fn regression_threshold_parser_accepts_only_finite_non_negative() {
+        assert_eq!(parse_regression_threshold("0").unwrap(), 0.0);
+        assert_eq!(parse_regression_threshold("1.5").unwrap(), 1.5);
+        for bad in ["-1", "-0.1", "nan", "inf", "-inf", "abc"] {
+            assert!(parse_regression_threshold(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
