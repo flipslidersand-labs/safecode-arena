@@ -26,6 +26,62 @@ fn summarize(file: std::fs::File) -> String {
         .join("\n")
 }
 
+/// 子プロセスへ引き継ぐ環境変数の許可リスト（完全一致）。
+///
+/// 候補コードが API キー等の秘密を読んで出力しないよう、ツールチェーンの
+/// 実行に必要な変数だけを通す。`*_TOKEN` / `*_API_KEY` 系は含めない。
+const ALLOWED_ENV: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "TERM",
+    "LANG",
+    "LANGUAGE",
+    "TMPDIR",
+    "TZ",
+    "CARGO_HOME",
+    "RUSTUP_HOME",
+    "RUSTUP_TOOLCHAIN",
+    "CARGO_TARGET_DIR",
+    "CARGO_BUILD_JOBS",
+    "RUSTFLAGS",
+    "GOPATH",
+    "GOCACHE",
+    "GOFLAGS",
+    "GOROOT",
+    "GOMODCACHE",
+    "GOENV",
+    "GOTOOLCHAIN",
+    "NODE_PATH",
+    "VIRTUAL_ENV",
+    "PYTHONPATH",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+];
+
+/// 環境変数名が子プロセスへ渡してよいか判定する。`LC_*` は全て許可する。
+fn is_allowed_env(name: &str) -> bool {
+    name.starts_with("LC_") || ALLOWED_ENV.contains(&name)
+}
+
+/// 子の環境を許可リストだけに絞る。呼び出し側が `Command::env` で明示した値は、
+/// 許可リストに含まれるものだけ残す。
+fn apply_env_allowlist(cmd: &mut std::process::Command) {
+    let explicit: Vec<(std::ffi::OsString, std::ffi::OsString)> = cmd
+        .get_envs()
+        .filter_map(|(k, v)| v.map(|v| (k.to_os_string(), v.to_os_string())))
+        .collect();
+    cmd.env_clear();
+    for (k, v) in std::env::vars_os().chain(explicit) {
+        if k.to_str().is_some_and(is_allowed_env) {
+            cmd.env(k, v);
+        }
+    }
+}
+
 /// 子プロセスをプロセスグループごと SIGKILL して回収する。
 ///
 /// 子は `process_group(0)` で自身がグループリーダー（pgid == pid）になっている。
@@ -85,6 +141,7 @@ pub fn run_stage_capture(
         }
     };
     let mut cmd = command;
+    apply_env_allowlist(&mut cmd);
     cmd.stdout(Stdio::from(out_for_child))
         .stderr(Stdio::from(err_for_child));
 
@@ -153,6 +210,46 @@ pub fn run_stage(label: &str, command: std::process::Command, limit: Duration) -
 mod tests {
     use super::*;
     use std::process::Command;
+
+    #[test]
+    fn secrets_are_not_allowed_but_toolchain_vars_are() {
+        for name in [
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "GITHUB_TOKEN",
+            "CARGO_REGISTRY_TOKEN",
+            "AWS_SECRET_ACCESS_KEY",
+        ] {
+            assert!(!is_allowed_env(name), "{name} は許可されてはならない");
+        }
+        for name in [
+            "PATH",
+            "HOME",
+            "CARGO_HOME",
+            "RUSTUP_HOME",
+            "LC_ALL",
+            "GOPATH",
+        ] {
+            assert!(is_allowed_env(name), "{name} は許可される必要がある");
+        }
+    }
+
+    #[test]
+    fn child_does_not_inherit_non_allowlisted_env() {
+        // 親の環境は変更せず、Command 側で明示設定した値も許可リスト外なら消えることを確認する。
+        // (親由来の継承は apply_env_allowlist が vars_os を同じ判定で濾過する。)
+        let mut cmd = Command::new("sh");
+        cmd.env("ANTHROPIC_API_KEY", "dummy-secret")
+            .env("PATH_PROBE_OK", "x")
+            .args([
+                "-c",
+                "echo key=${ANTHROPIC_API_KEY:-unset} path=${PATH:+set}",
+            ]);
+        let (outcome, captured) = run_stage_capture("env", cmd, Duration::from_secs(5));
+        assert!(outcome.is_passed());
+        assert!(captured.contains("key=unset"), "{captured}");
+        assert!(captured.contains("path=set"), "{captured}");
+    }
 
     #[test]
     fn long_command_times_out_and_is_killed() {
