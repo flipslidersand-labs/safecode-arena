@@ -2,8 +2,9 @@
 //!
 //! - 各 `evaluate` 実行を 1 つの run として保存する。
 //! - 同じ候補 ID のスコアが過去 run より下がっていれば「リグレッション」として検出する。
-//!   比較に使うのは performance 軸を除いた絶対評価軸の合計（`comparable_score`）。
+//!   比較に使うのは performance・reasoning 軸を除いた絶対評価軸の合計（`comparable_score`）。
 //!   performance は run 内の最速候補に対する相対値で run 間比較できないため除外する。
+//!   reasoning は LLM レビューの一時失敗で 0 点になり偽の下落を生むため除外する。
 
 use crate::model::{AxisScores, Evaluation};
 use anyhow::{Context, Result};
@@ -35,9 +36,10 @@ impl Regression {
     }
 }
 
-/// run 間比較に使うスコア。相対評価の performance 軸を除いた軸の合計。
+/// run 間比較に使うスコア。performance（相対評価）と reasoning（LLM レビュー。
+/// 一時的な API 失敗で 0 点になり偽の下落になる）を除いた軸の合計。
 pub fn comparable_score(axes: &AxisScores) -> f64 {
-    axes.total() - axes.performance
+    axes.total() - axes.performance - axes.reasoning
 }
 
 /// 保存済み detail_json から比較用スコアを計算する。
@@ -46,13 +48,7 @@ fn comparable_from_detail(detail_json: &str) -> Option<f64> {
     let v: serde_json::Value = serde_json::from_str(detail_json).ok()?;
     let axes = v.get("axes")?.as_object()?;
     let get = |k: &str| axes.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0);
-    Some(
-        get("correctness")
-            + get("security")
-            + get("maintainability")
-            + get("resource_usage")
-            + get("reasoning"),
-    )
+    Some(get("correctness") + get("security") + get("maintainability") + get("resource_usage"))
 }
 
 /// SQLite を裏に持つ評価ストア。
@@ -209,7 +205,7 @@ impl Store {
 }
 
 /// 過去の比較用スコア（`run_comparable_scores`）と現在の評価を突き合わせ、下がった候補を返す。
-/// 現在側も performance を除いた `comparable_score` で比べる。
+/// 現在側も performance・reasoning を除いた `comparable_score` で比べる。
 /// `threshold` 以上下落したものだけを対象にする（誤差・揺らぎ除け）。
 pub fn find_regressions(
     previous: &HashMap<String, f64>,
@@ -360,6 +356,24 @@ mod tests {
         assert_eq!(regs.len(), 1);
         assert_eq!(regs[0].previous, 60.0);
         assert_eq!(regs[0].current, 40.0);
+    }
+
+    #[test]
+    fn reasoning_failure_is_not_regression() {
+        // 前 run: LLM レビュー成功 (reasoning 20) / 今 run: API 失敗で reasoning 0。他軸は同じ。
+        let mut prev_eval = eval_axes("a", 60.0, 0.0);
+        prev_eval.axes.reasoning = 20.0;
+        let mut s = Store::open_in_memory().unwrap();
+        let run = s.save_run("t", "", &[prev_eval]).unwrap();
+        let prev = s.run_comparable_scores(run).unwrap();
+        let curr = vec![eval_axes("a", 60.0, 0.0)];
+        assert!(find_regressions(&prev, &curr, 1.0).is_empty());
+    }
+
+    #[test]
+    fn comparable_from_detail_ignores_reasoning() {
+        let json = r#"{"axes":{"correctness":10,"security":5,"maintainability":3,"resource_usage":2,"performance":9,"reasoning":20}}"#;
+        assert_eq!(comparable_from_detail(json), Some(20.0));
     }
 
     #[test]

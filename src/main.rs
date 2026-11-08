@@ -289,7 +289,7 @@ fn persist_and_report_regressions(
         }
         if regs.is_empty() {
             if dropped.is_empty() {
-                eprintln!("リグレッションなし（直近 run #{prev_id} と比較、performance 軸を除く）");
+                eprintln!("リグレッションなし（直近 run #{prev_id} と比較、performance・reasoning 軸を除く）");
             }
         } else {
             has_regression = true;
