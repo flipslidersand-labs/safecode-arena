@@ -616,3 +616,35 @@ fn generate_with_missing_spec_fails_before_calling_llm() {
         .failure()
         .stderr(predicate::str::contains("spec ファイルの読込に失敗"));
 }
+
+#[test]
+fn regression_threshold_rejects_negative_nan_and_inf() {
+    let cand = write_candidate("ok", "pub fn add(a: i32, b: i32) -> i32 { a + b }\n");
+    for v in ["-1", "nan", "inf"] {
+        Command::cargo_bin("safecode")
+            .unwrap()
+            .arg("evaluate")
+            .arg(cand.path())
+            .arg(format!("--regression-threshold={v}"))
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("regression-threshold"));
+    }
+}
+
+#[test]
+fn nan_weight_in_config_fails_at_startup() {
+    let cand = write_candidate("ok", "pub fn add(a: i32, b: i32) -> i32 { a + b }\n");
+    let mut cfg = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
+    cfg.write_all(b"[weights]\ncorrectness = nan\n").unwrap();
+    cfg.flush().unwrap();
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(cand.path())
+        .arg("--config")
+        .arg(cfg.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("correctness"));
+}

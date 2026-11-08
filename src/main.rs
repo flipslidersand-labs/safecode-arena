@@ -60,8 +60,8 @@ enum Command {
         /// 評価結果を保存する SQLite DB（指定時、過去 run との後退を検出）。
         #[arg(long)]
         db: Option<String>,
-        /// リグレッションと判定するスコア下落の下限。
-        #[arg(long, default_value_t = 1.0)]
+        /// リグレッションと判定するスコア下落の下限（0 以上の有限値）。
+        #[arg(long, default_value_t = 1.0, value_parser = safecode_arena::config::parse_regression_threshold)]
         regression_threshold: f64,
         /// Wasm サンドボックスで実行する候補のエントリ関数名（no-arg pub fn）。
         /// 指定すると wasm32-wasip1 にビルドして隔離実行する。
