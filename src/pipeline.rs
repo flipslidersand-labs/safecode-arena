@@ -393,6 +393,89 @@ fn assemble(candidate: &Candidate, r: StageResults, rubric: &Rubric) -> Evaluati
     }
 }
 
+/// rustc が既定で warn する lint のうち、`--force-warn` で強制するもの (#237)。
+///
+/// `#![allow(warnings)]` は `warnings` グループ全体を消すが、`--force-warn warnings` は
+/// E0602 で使えないため個別に列挙する。`unused` グループは既定 allow の
+/// `unused_macro_rules` / `unused_extern_crates` を含み通常候補の件数まで変えるので使わない。
+/// 除外したもの: 標準の候補コードで出ない/評価対象外の lint (target 固有の asm・gpu・
+/// aarch64、internal/incomplete features、diagnostic attribute 系、unknown-lints 等の
+/// メタ lint、将来互換の ambiguous-*/uncovered-* 系)。
+const RUSTC_FORCE_WARN_LINTS: &[&str] = &[
+    "nonstandard_style",
+    "deprecated",
+    "dead_code",
+    "unused_imports",
+    "unused_variables",
+    "unused_assignments",
+    "unused_mut",
+    "unused_must_use",
+    "unused_parens",
+    "unused_braces",
+    "unused_comparisons",
+    "unused_allocation",
+    "unused_doc_comments",
+    "unused_labels",
+    "unused_unsafe",
+    "unused_attributes",
+    "unused_macros",
+    "unused_visibilities",
+    "unreachable_code",
+    "unreachable_patterns",
+    "unconditional_recursion",
+    "path_statements",
+    "redundant_semicolons",
+    "map_unit_fn",
+    "irrefutable_let_patterns",
+    "overlapping_range_endpoints",
+    "non_contiguous_range_endpoints",
+    "bare_trait_objects",
+    "array_into_iter",
+    "for_loops_over_fallibles",
+    "noop_method_call",
+    "non_fmt_panics",
+    "non_local_definitions",
+    "static_mut_refs",
+    "invalid_value",
+    "type_alias_bounds",
+    "trivial_bounds",
+    "double_negations",
+    "dropping_references",
+    "forgetting_references",
+    "dropping_copy_types",
+    "forgetting_copy_types",
+    "while_true",
+    "mismatched_lifetime_syntaxes",
+    "non_shorthand_field_patterns",
+    "improper_ctypes",
+    "improper_ctypes_definitions",
+    "const_item_mutation",
+    "function_item_references",
+    "dangling_pointers_from_locals",
+    "dangling_pointers_from_temporaries",
+    "invalid_nan_comparisons",
+    "invalid_from_utf8",
+    "unnecessary_transmutes",
+];
+
+/// `cargo clippy` の引数。`--force-warn` は候補先頭の `#![allow(...)]` でも警告を出させる (#237)。
+/// CARGO_TERM_COLOR=always(CI 既定)だと警告行に ANSI が付き件数を数えられないため色を切る。
+fn clippy_args() -> Vec<&'static str> {
+    let mut args = vec![
+        "clippy",
+        "--color",
+        "never",
+        "--",
+        "--force-warn",
+        "clippy::all",
+    ];
+    for lint in RUSTC_FORCE_WARN_LINTS {
+        args.push("--force-warn");
+        args.push(lint);
+    }
+    args
+}
+
 /// Rust 候補の compile ステージで使う `cargo` 引数。
 ///
 /// ベンチ候補は `benches/bench.rs` に置かれ、既定の `cargo build`/`test`/`clippy` は
@@ -451,20 +534,7 @@ fn run_rust_stages(
     let test = runner::run_stage("test", t, timeout);
 
     let mut c = Command::new("cargo");
-    // CARGO_TERM_COLOR=always(CI 既定)だと警告行に ANSI が付き件数を数えられないため色を切る。
-    // `--force-warn` は候補先頭の `#![allow(...)]` による抑止でも警告を出させる (#237)。
-    // `warnings` グループは force-warn できない(E0602)ため、rustc 側は `unused` グループを指定する。
-    c.args([
-        "clippy",
-        "--color",
-        "never",
-        "--",
-        "--force-warn",
-        "clippy::all",
-        "--force-warn",
-        "unused",
-    ])
-    .current_dir(root);
+    c.args(clippy_args()).current_dir(root);
     let (lint, lint_stderr) = runner::run_stage_capture("clippy", c, timeout);
     let lint_warnings = count_lint_warnings(&lint_stderr);
 
@@ -1965,6 +2035,29 @@ mod lint_run_failed_tests {
             "go: downloading example.com/x v1.0.0\n"
         ));
         assert!(!go_lint_run_failed(""));
+    }
+}
+
+#[cfg(test)]
+mod clippy_args_tests {
+    use super::clippy_args;
+
+    #[test]
+    fn clippy_args_force_warn_clippy_and_rustc_lints() {
+        // `-W` は候補の `#![allow]` に負けるため `--force-warn` を使う (#237)
+        let a = clippy_args();
+        assert!(!a.contains(&"-W"));
+        for lint in [
+            "clippy::all",
+            "nonstandard_style",
+            "deprecated",
+            "unused_variables",
+        ] {
+            let i = a.iter().position(|x| *x == lint).unwrap();
+            assert_eq!(a[i - 1], "--force-warn");
+        }
+        // 既定 allow の lint を含む `unused` グループは通常候補の件数を変えるので使わない
+        assert!(!a.contains(&"unused"));
     }
 }
 

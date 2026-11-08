@@ -690,10 +690,18 @@ mod tests {
 
 #[test]
 fn rust_inner_allow_attribute_does_not_hide_clippy_warnings() {
-    // `let x = 1;` は未使用変数 warning。抑止属性を付けても 0 warn に化けない。
+    // rustc の unused_variables / nonstandard_style / deprecated と clippy の len_zero を含む。
+    // 抑止属性を付けても 0 warn に化けない(clippy 側は `v.len() == 0` のみ)。
+    // 5 = bad_name + deprecated 利用 + 未使用変数 + len_zero + cargo のまとめ行(既存の数え方。別 Issue 予定)。
     let cand = write_candidate(
         "sup",
-        "#![allow(clippy::all, warnings)]\npub fn add(a: i32, b: i32) -> i32 { let x = 1; a + b }\n",
+        "#![allow(clippy::all, warnings)]\n\
+         pub struct bad_name;\n\
+         #[deprecated]\n\
+         pub fn old() {}\n\
+         pub fn use_old() { old() }\n\
+         pub fn no_items(v: &[i32]) -> bool { v.len() == 0 }\n\
+         pub fn add(a: i32, b: i32) -> i32 { let x = 1; a + b }\n",
     );
 
     Command::cargo_bin("safecode")
@@ -702,7 +710,7 @@ fn rust_inner_allow_attribute_does_not_hide_clippy_warnings() {
         .arg(cand.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains(" 0 warn").not());
+        .stdout(predicate::str::contains("5 warn"));
 }
 
 #[test]
@@ -720,7 +728,7 @@ fn python_noqa_file_directive_does_not_hide_ruff_findings() {
         .arg(cand.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains(" 0 warn").not());
+        .stdout(predicate::str::is_match(r"\b[1-9][0-9]* warn").unwrap());
 }
 
 #[test]
@@ -741,5 +749,5 @@ fn js_eslint_disable_comment_does_not_hide_findings() {
         .arg(f.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains(" 0 warn").not());
+        .stdout(predicate::str::is_match(r"\b[1-9][0-9]* warn").unwrap());
 }
