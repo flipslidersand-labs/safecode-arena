@@ -581,12 +581,15 @@ fn db_previous_candidate_dropped_by_eval_error_fails() {
     std::fs::write(&keep, "pub fn add(a: i32, b: i32) -> i32 { a + b }\n").unwrap();
     std::fs::write(&flaky, "def f():\n    return 1\n").unwrap();
 
-    // run #1: 両方成功して保存される。
+    // run #1: 両方成功して保存される。比較キーは --tests の有無を含む（#243）ので run #2 と揃えて空の tests ディレクトリを渡す。
+    let tests_ok = work.path().join("tests_ok");
+    std::fs::create_dir_all(&tests_ok).unwrap();
     Command::cargo_bin("safecode")
         .unwrap()
         .arg("evaluate")
         .arg(&keep)
         .arg(&flaky)
+        .args(["--tests", tests_ok.to_str().unwrap()])
         .args(["--db", db.to_str().unwrap()])
         .assert()
         .success()
