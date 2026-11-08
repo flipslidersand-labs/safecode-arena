@@ -7,6 +7,7 @@ use crate::analysis::{
 };
 use crate::config::Rubric;
 use crate::model::{Candidate, Evaluation, Language, StageOutcome};
+use crate::test_summary::{parse_test_summary, TestVerdict};
 use crate::{runner, scoring, wasm};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -447,8 +448,8 @@ fn run_rust_stages(
     }
 
     let mut t = Command::new("cargo");
-    t.arg("test").current_dir(root);
-    let test = runner::run_stage("test", t, timeout);
+    t.args(["test", "--color", "never"]).current_dir(root);
+    let test = run_test_stage(Language::Rust, t, timeout);
 
     let mut c = Command::new("cargo");
     // CARGO_TERM_COLOR=always(CI 既定)だと警告行に ANSI が付き件数を数えられないため色を切る。
@@ -460,8 +461,8 @@ fn run_rust_stages(
     let prop_test = if let Some(prop_dir) = prop_tests_dir {
         copy_ext_keep_existing(prop_dir, &root.join("tests"), "rs", "prop_")?;
         let mut pt = Command::new("cargo");
-        pt.arg("test").current_dir(root);
-        runner::run_stage("prop_test", pt, timeout)
+        pt.args(["test", "--color", "never"]).current_dir(root);
+        run_test_stage(Language::Rust, pt, timeout)
     } else {
         StageOutcome::Skipped
     };
@@ -598,7 +599,7 @@ fn run_python_stages(
     t.arg("-c")
         .arg(r#"python3 -m pytest -q --override-ini="python_files=*.py" . ; c=$?; [ $c -eq 0 ] || [ $c -eq 5 ]"#)
         .current_dir(root);
-    let test = runner::run_stage("test", t, timeout);
+    let test = run_test_stage(Language::Python, t, timeout);
 
     // lint: ruff（指摘があっても stage は成功扱い、件数のみ採点に使う）
     // ruff 未導入・実行失敗は「指摘 0 件」ではなく lint Skipped にする (#158)
@@ -784,8 +785,9 @@ fn run_go_stages(
 
     // test: go test（テストファイルなし → exit 0 with "[no test files]", 成功扱い）
     let mut t = Command::new("go");
-    t.args(["test", "./..."]).current_dir(root);
-    let test = runner::run_stage("test", t, timeout);
+    // -v: ok パッケージに `=== RUN` 行があることを run_test_stage が確認する (init の os.Exit(0) 対策)。
+    t.args(["test", "-v", "./..."]).current_dir(root);
+    let test = run_test_stage(Language::Go, t, timeout);
 
     // lint: staticcheck を優先、なければ go vet にフォールバック
     let (lint, lint_warnings) = if staticcheck_available() {
@@ -885,7 +887,7 @@ fn parse_gremlins_json(content: &str) -> Option<(usize, usize)> {
 
 /// JS のテストコマンドを決める。`*.test.js` が無ければ `None`（test は Skipped）。
 /// candidate.js 自体は `node --test` に渡さない（top-level 副作用で誤判定するため, #159）。
-fn js_test_command(root: &Path) -> Option<&'static str> {
+fn js_test_command(root: &Path) -> Option<String> {
     let has_tests = root
         .read_dir()
         .map(|rd| {
@@ -893,7 +895,46 @@ fn js_test_command(root: &Path) -> Option<&'static str> {
                 .any(|e| e.file_name().to_string_lossy().ends_with(".test.js"))
         })
         .unwrap_or(false);
-    has_tests.then_some("node --test *.test.js 1>&2")
+    has_tests.then(|| format!("{NODE_ISOLATION_PROBE} node --test $ISO *.test.js 1>&2"))
+}
+
+/// `node --test` を同一プロセスで実行させるためのフラグ検出 (#226)。
+/// 既定の子プロセス隔離ではテストファイル自体が 1 件の合格に数えられ、`process.exit(0)` でも
+/// 結果行が出てしまう。`--test-isolation=none` なら exit で結果行が出ず NoSummary になる。
+/// 未対応の旧 Node (22.8 未満) ではフラグを付けると起動に失敗するため、検出できた場合のみ付ける
+/// (旧 Node では exit(0) 偽装を検出できない既知の制約)。
+const NODE_ISOLATION_PROBE: &str =
+    "ISO=; node --help 2>/dev/null | grep -q -- --test-isolation && ISO=--test-isolation=none;";
+
+/// テストステージを実行し、終了コードに加えて出力の結果行も確認する (#226)。
+/// 合格は「exit 0 かつ結果行あり かつ失敗 0」。0 件実行は許可する。
+fn run_test_stage(lang: Language, cmd: Command, timeout: Duration) -> StageOutcome {
+    let (outcome, output) = runner::run_stage_capture("test", cmd, timeout);
+    if !outcome.is_passed() {
+        return outcome;
+    }
+    match test_verdict_failure(lang, &output) {
+        Some(detail) => StageOutcome::Failed { detail },
+        None => outcome,
+    }
+}
+
+/// 出力が合格と認められない場合に理由を返す。
+fn test_verdict_failure(lang: Language, output: &str) -> Option<String> {
+    match parse_test_summary(lang, output) {
+        TestVerdict::NoSummary => {
+            Some("テスト結果行が見つからない(exit(0) 等で打ち切られた可能性)".to_string())
+        }
+        TestVerdict::Failed { reason } => Some(reason),
+        TestVerdict::Ok { passed } => {
+            // Go: テストが走った ok パッケージには `=== RUN` 行が出る。無ければ init 等での打ち切り。
+            if lang == Language::Go && passed > 0 && !output.contains("=== RUN") {
+                Some("go test: ok だが実行ログ(=== RUN)が無い(os.Exit(0) 等の可能性)".to_string())
+            } else {
+                None
+            }
+        }
+    }
 }
 
 /// JavaScript 候補: node --check（構文検証）→ node --test → ESLint（あれば）。
@@ -922,7 +963,7 @@ fn run_js_stages(
         Some(cmd) => {
             let mut t = Command::new("sh");
             t.arg("-c").arg(cmd).current_dir(root);
-            runner::run_stage("test", t, timeout)
+            run_test_stage(Language::JavaScript, t, timeout)
         }
         None => StageOutcome::Skipped,
     };
@@ -1007,9 +1048,11 @@ fn run_ts_stages(
     let test = if test_files_exist {
         let mut t = Command::new("sh");
         t.arg("-c")
-            .arg(r#"tsc && node --test $(ls dist/*.test.js 2>/dev/null) 1>&2"#)
+            .arg(format!(
+                "{NODE_ISOLATION_PROBE} tsc && node --test $ISO $(ls dist/*.test.js 2>/dev/null) 1>&2"
+            ))
             .current_dir(root);
-        runner::run_stage("test", t, timeout)
+        run_test_stage(Language::TypeScript, t, timeout)
     } else {
         StageOutcome::Skipped
     };
@@ -1975,5 +2018,31 @@ mod js_test_command_tests {
         assert!(cmd.contains("--test"));
         assert!(!cmd.contains("candidate.js"));
         assert!(cmd.contains("*.test.js"));
+    }
+}
+
+#[cfg(test)]
+mod test_verdict_failure_tests {
+    use super::*;
+
+    #[test]
+    fn missing_summary_is_failure() {
+        assert!(test_verdict_failure(Language::Rust, "").is_some());
+        assert!(test_verdict_failure(Language::Python, "").is_some());
+    }
+
+    #[test]
+    fn zero_run_is_allowed() {
+        let o = "     Running unittests src/lib.rs (a)\n\
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n";
+        assert!(test_verdict_failure(Language::Rust, o).is_none());
+        assert!(test_verdict_failure(Language::Go, "?   \tx\t[no test files]\n").is_none());
+    }
+
+    #[test]
+    fn go_ok_without_run_lines_is_failure() {
+        assert!(test_verdict_failure(Language::Go, "ok  \tx\t0.003s\n").is_some());
+        let o = "=== RUN   TestA\n--- PASS: TestA (0.00s)\nPASS\nok  \tx\t0.003s\n";
+        assert!(test_verdict_failure(Language::Go, o).is_none());
     }
 }

@@ -264,6 +264,43 @@ fn python_inline_test_failure_detected() {
 }
 
 #[test]
+fn rust_exit_zero_in_test_is_detected_as_failed() {
+    // テスト中に exit(0) で打ち切ると cargo test は終了コード 0 だが結果行が出ない (#226)。
+    let cand = write_candidate(
+        "exit0",
+        "pub fn f() -> i32 { std::process::exit(0) }\n\
+         #[cfg(test)]\nmod t {\n    #[test]\n    fn a() { super::f(); }\n}\n",
+    );
+
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(cand.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("❌ failed"))
+        .stdout(predicate::str::contains("85.0").not());
+}
+
+#[test]
+fn python_os_exit_zero_in_candidate_is_detected_as_failed() {
+    // os._exit(0) で pytest を打ち切っても終了コード 0 になるが、結果行が無いので失敗扱い (#226)。
+    let cand = write_py(
+        "exit0",
+        "import os\n\ndef add(a, b):\n    return a + b\n\ndef test_x():\n    os._exit(0)\n",
+    );
+
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(cand.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("❌ failed"))
+        .stdout(predicate::str::contains("85.0").not());
+}
+
+#[test]
 #[ignore = "wasm32-wasip1 ターゲットが必要。CI は ignored-tests.yml が --ignored で実行する (#108)"]
 fn wasm_entry_runs_sandbox_and_awards_resource_usage() {
     // wasm32-wasip1 にビルドして隔離実行できる候補。
