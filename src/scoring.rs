@@ -1068,10 +1068,12 @@ mod tests {
     #[test]
     fn performance_bench_only_on_failed_candidate_uses_time_for_others() {
         let r = Rubric::default();
-        // compile 失敗の候補は bench_ns=None（pipeline の実際の形）。
+        // 失敗候補だけが bench_ns を持つ形（test 失敗時も bench を実行する pipeline.rs:481 で起こり得る）。
+        // 通過候補は bench_ns=None なので全員を時間で比較する。
         // 失敗候補は 0、もう一方は唯一の採点対象で満点。
         let mut broken = perf_eval(1);
         broken.compile = failed();
+        broken.bench_ns = Some(5);
         let mut evals = vec![broken, perf_eval(1)];
         assign_performance(&mut evals, &r);
         assert_eq!(evals[0].axes.performance, 0.0);
