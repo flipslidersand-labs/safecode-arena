@@ -215,13 +215,30 @@ fn render_candidate_details(out: &mut String, evals: &[Evaluation]) {
                     has_failures = true;
                 }
                 let snippet = detail.lines().take(8).collect::<Vec<_>>().join("\n");
+                let fence = fence_for(&snippet);
                 out.push_str(&format!(
-                    "<details><summary>{label} エラー</summary>\n\n```\n{snippet}\n```\n\n</details>\n\n"
+                    "<details><summary>{label} エラー</summary>\n\n{fence}\n{snippet}\n{fence}\n\n</details>\n\n"
                 ));
             }
         }
         out.push('\n');
     }
+}
+
+/// `content` 中の最長のバッククォート連続より長いコードフェンス(最低 3 個)を返す。
+/// 候補由来の文字列がフェンスを閉じて Markdown を差し込むのを防ぐ。
+pub(crate) fn fence_for(content: &str) -> String {
+    let mut longest = 0usize;
+    let mut run = 0usize;
+    for c in content.chars() {
+        if c == '`' {
+            run += 1;
+            longest = longest.max(run);
+        } else {
+            run = 0;
+        }
+    }
+    "`".repeat((longest + 1).max(3))
 }
 
 fn render_comparison(out: &mut String, evals: &[Evaluation]) {
@@ -748,6 +765,31 @@ mod tests {
         a.test = failed(&detail);
         let md = render(&[a, eval("b", 40.0)]);
         assert!(md.contains("L1;\nL2;\nL3;\nL4;\nL5;\nL6;\nL7;\nL8;\n```"));
+    }
+
+    #[test]
+    fn md_failed_detail_with_backtick_fence_cannot_close_outer_fence() {
+        let mut a = eval("a", 50.0);
+        a.compile = failed("error: x\n```\n# injected heading\n````\n[evil](http://e)");
+        let md = render(&[a, eval("b", 40.0)]);
+        let start = md.find("<summary>コンパイル エラー</summary>").unwrap();
+        let body = &md[start..md[start..].find("</details>").map(|i| i + start).unwrap()];
+        let lines: Vec<&str> = body.lines().collect();
+        let open = lines.iter().position(|l| l.starts_with("```")).unwrap();
+        let fence = lines[open];
+        assert!(fence.len() >= 5, "fence too short: {fence}");
+        // 外側フェンスと同一の行は開始と終了の 2 つだけ
+        assert_eq!(lines.iter().filter(|l| **l == fence).count(), 2);
+        let close = lines.iter().rposition(|l| *l == fence).unwrap();
+        assert!(lines[open + 1..close].contains(&"# injected heading"));
+        assert!(lines[close + 1..].iter().all(|l| l.trim().is_empty()));
+    }
+
+    #[test]
+    fn fence_for_is_longer_than_longest_backtick_run() {
+        assert_eq!(fence_for("no ticks"), "```");
+        assert_eq!(fence_for("a ``` b"), "````");
+        assert_eq!(fence_for("`` ````` `"), "``````");
     }
 
     #[test]
