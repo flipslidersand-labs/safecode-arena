@@ -748,3 +748,81 @@ mod tests {
     assert!(all.contains("ENVPROBE_RESULT=ENVPROBE_UNSET"), "{all}");
     assert!(!all.contains("dummy-secret-for-test"), "{all}");
 }
+
+// --- lint 抑止コメントの回帰テスト (#237) ---
+// 候補が先頭で lint を抑止しても警告件数が 0 に化けないこと。
+
+#[test]
+fn rust_inner_allow_attribute_does_not_hide_clippy_warnings() {
+    // rustc の unused_variables / nonstandard_style / deprecated と clippy の len_zero を含む。
+    // 抑止属性を付けても 0 warn に化けない(clippy 側は `v.len() == 0` のみ)。
+    // 5 = bad_name + deprecated 利用 + 未使用変数 + len_zero + cargo のまとめ行(既存の数え方。別 Issue 予定)。
+    let cand = write_candidate(
+        "sup",
+        "#![allow(clippy::all, warnings)]\n\
+         pub struct bad_name;\n\
+         #[deprecated]\n\
+         pub fn old() {}\n\
+         pub fn use_old() { old() }\n\
+         pub fn no_items(v: &[i32]) -> bool { v.len() == 0 }\n\
+         pub fn add(a: i32, b: i32) -> i32 { let x = 1; a + b }\n",
+    );
+
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(cand.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("5 warn"));
+}
+
+#[test]
+#[ignore = "pytest/ruff が必要。CI は ignored-tests.yml が --ignored で実行する (#108)"]
+fn python_noqa_file_directive_does_not_hide_ruff_findings() {
+    // `import os` は未使用 import (F401) 1 件。`# ruff: noqa` を付けても 0 warn に化けない。
+    let cand = write_py(
+        "sup",
+        "# ruff: noqa\nimport os\n\n\ndef add(a, b):\n    return a + b\n",
+    );
+
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(cand.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::is_match(r"\b[1-9][0-9]* warn").unwrap());
+}
+
+#[test]
+#[ignore = "eslint(v9+) と node が必要。実行環境依存のため ignored (#237)"]
+fn js_eslint_disable_comment_does_not_hide_findings() {
+    // CI(ignored-tests.yml)には eslint が無い。パイプラインと同じ解決(PATH 上の `eslint`)で
+    // 実行できなければ、skipped 表示を誤検知せず明示してスキップする。
+    let eslint_ok = std::process::Command::new("eslint")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !eslint_ok {
+        eprintln!("eslint 未導入のためスキップ: js_eslint_disable_comment_does_not_hide_findings");
+        return;
+    }
+    let mut f = tempfile::Builder::new()
+        .prefix("sup")
+        .suffix(".js")
+        .tempfile()
+        .unwrap();
+    f.write_all(b"/* eslint-disable */\nconst unused = 1;\nmodule.exports = {};\n")
+        .unwrap();
+    f.flush().unwrap();
+
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(f.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::is_match(r"\b[1-9][0-9]* warn").unwrap());
+}
