@@ -9,7 +9,7 @@
 
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
-use safecode_arena::config::Config;
+use safecode_arena::config::{Config, Rubric};
 use safecode_arena::generator;
 use safecode_arena::model::{Candidate, Language};
 use safecode_arena::store::{self, Store};
@@ -234,7 +234,18 @@ fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
 
     // 永続化 + リグレッション検出（出力後に実行して PR コメント用 report が確実に書かれるようにする）
     if let Some(db_path) = args.db.as_deref() {
-        let options = run_options_key(args.llm_review, args.mutation, args.wasm_entry.as_deref());
+        let options = run_options_key(&RunConditions {
+            llm_review: args.llm_review,
+            mutation: args.mutation,
+            wasm_entry: args.wasm_entry.as_deref(),
+            tests: args.tests.is_some(),
+            prop_tests: args.prop_tests.is_some(),
+            // 評価失敗で脱落した候補も含める（脱落でキーが変わると #181 の脱落検出が効かなくなる）。
+            rubrics: candidates
+                .iter()
+                .map(|c| (c.language.name(), config.rubric_for(c.language.name())))
+                .collect(),
+        });
         let has_regression = persist_and_report_regressions(
             db_path,
             &ranked,
@@ -249,12 +260,49 @@ fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// スコアに影響する実行オプションを正規化した比較キー（#191）。
-/// reasoning（--llm-review）・correctness の再配分（--mutation）・resource_usage（--wasm-entry）が変わる。
-fn run_options_key(llm_review: bool, mutation: bool, wasm_entry: Option<&str>) -> String {
+/// スコアに影響する実行条件（比較キーの材料）。
+struct RunConditions<'a> {
+    llm_review: bool,
+    mutation: bool,
+    wasm_entry: Option<&'a str>,
+    tests: bool,
+    prop_tests: bool,
+    /// 今回評価した候補の (言語名, 適用ルーブリック)。
+    rubrics: Vec<(&'a str, Rubric)>,
+}
+
+/// スコアに影響する実行条件を正規化した比較キー（#191, #243）。
+///
+/// 含めるもの: --llm-review / --mutation / --wasm-entry、--tests・--prop-tests を使ったか（有無のみ、パスは含めない）、
+/// 評価した言語ごとの適用ルーブリック（重み）。ハッシュは使わず、言語名で整列・重複排除した
+/// 文字列にするため決定的で、不一致時に原因を目視できる。
+/// 含めないもの: --out / --format / --timeout-secs / --db / --regression-threshold（採点に無関係、または判定側の設定）。
+fn run_options_key(c: &RunConditions) -> String {
+    let mut rubrics: Vec<(&str, Rubric)> = c.rubrics.clone();
+    rubrics.sort_by(|a, b| a.0.cmp(b.0));
+    rubrics.dedup_by(|a, b| a.0 == b.0);
+    let weights: Vec<String> = rubrics
+        .iter()
+        .map(|(lang, r)| {
+            format!(
+                "{lang}:{},{},{},{},{},{}",
+                r.correctness,
+                r.security,
+                r.performance,
+                r.maintainability,
+                r.resource_usage,
+                r.reasoning
+            )
+        })
+        .collect();
     format!(
-        "llm_review={llm_review};mutation={mutation};wasm_entry={}",
-        wasm_entry.unwrap_or("")
+        "llm_review={};mutation={};wasm_entry={};tests={};prop_tests={};rubric={}",
+        c.llm_review,
+        c.mutation,
+        c.wasm_entry.unwrap_or(""),
+        c.tests,
+        c.prop_tests,
+        weights.join("|")
     )
 }
 
@@ -437,11 +485,79 @@ fn run_history(db_path: &str) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::keep_evaluated;
+    use super::{keep_evaluated, run_options_key, RunConditions};
+    use safecode_arena::config::Rubric;
+    use safecode_arena::store::Store;
+
+    fn base() -> RunConditions<'static> {
+        RunConditions {
+            llm_review: false,
+            mutation: false,
+            wasm_entry: None,
+            tests: true,
+            prop_tests: false,
+            rubrics: vec![("rust", Rubric::default())],
+        }
+    }
 
     #[test]
     fn keep_evaluated_passes_ok_and_drops_err() {
         assert_eq!(keep_evaluated("a", Ok(1)), Some(1));
         assert_eq!(keep_evaluated::<i32>("b", Err(anyhow::anyhow!("io"))), None);
+    }
+
+    #[test]
+    fn key_is_stable_for_same_conditions() {
+        assert_eq!(run_options_key(&base()), run_options_key(&base()));
+    }
+
+    #[test]
+    fn key_changes_with_prop_tests_tests_and_weights() {
+        let k = run_options_key(&base());
+        let mut c = base();
+        c.prop_tests = true;
+        assert_ne!(run_options_key(&c), k);
+        let mut c = base();
+        c.tests = false;
+        assert_ne!(run_options_key(&c), k);
+        let mut c = base();
+        c.rubrics = vec![(
+            "rust",
+            Rubric {
+                correctness: 40.0,
+                security: 30.0,
+                ..Rubric::default()
+            },
+        )];
+        assert_ne!(run_options_key(&c), k);
+        let mut c = base();
+        c.rubrics = vec![("go", Rubric::default())];
+        assert_ne!(run_options_key(&c), k);
+    }
+
+    #[test]
+    fn key_ignores_candidate_order_and_duplicates() {
+        let mut a = base();
+        a.rubrics = vec![("rust", Rubric::default()), ("go", Rubric::default())];
+        let mut b = base();
+        b.rubrics = vec![
+            ("go", Rubric::default()),
+            ("rust", Rubric::default()),
+            ("rust", Rubric::default()),
+        ];
+        assert_eq!(run_options_key(&a), run_options_key(&b));
+    }
+
+    #[test]
+    fn run_with_other_prop_tests_condition_is_not_a_baseline() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("t.db")).unwrap();
+        let mut with_prop = base();
+        with_prop.prop_tests = true;
+        let k_prop = run_options_key(&with_prop);
+        let k_plain = run_options_key(&base());
+        let id = s.save_run("t1", &k_prop, &[]).unwrap();
+        assert_eq!(s.latest_run_id_matching(&k_prop).unwrap(), Some(id));
+        assert_eq!(s.latest_run_id_matching(&k_plain).unwrap(), None);
     }
 }
