@@ -264,6 +264,43 @@ fn python_inline_test_failure_detected() {
 }
 
 #[test]
+fn rust_exit_zero_in_test_is_detected_as_failed() {
+    // テスト中に exit(0) で打ち切ると cargo test は終了コード 0 だが結果行が出ない (#226)。
+    let cand = write_candidate(
+        "exit0",
+        "pub fn f() -> i32 { std::process::exit(0) }\n\
+         #[cfg(test)]\nmod t {\n    #[test]\n    fn a() { super::f(); }\n}\n",
+    );
+
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(cand.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("❌ failed"))
+        .stdout(predicate::str::contains("85.0").not());
+}
+
+#[test]
+fn python_os_exit_zero_in_candidate_is_detected_as_failed() {
+    // os._exit(0) で pytest を打ち切っても終了コード 0 になるが、結果行が無いので失敗扱い (#226)。
+    let cand = write_py(
+        "exit0",
+        "import os\n\ndef add(a, b):\n    return a + b\n\ndef test_x():\n    os._exit(0)\n",
+    );
+
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(cand.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("❌ failed"))
+        .stdout(predicate::str::contains("85.0").not());
+}
+
+#[test]
 #[ignore = "wasm32-wasip1 ターゲットが必要。CI は ignored-tests.yml が --ignored で実行する (#108)"]
 fn wasm_entry_runs_sandbox_and_awards_resource_usage() {
     // wasm32-wasip1 にビルドして隔離実行できる候補。
@@ -352,6 +389,33 @@ fn go_clean_candidate_scores() {
         .success()
         .stdout(predicate::str::contains("85.0"))
         .stdout(predicate::str::contains("✅"));
+}
+
+#[test]
+fn go_forged_no_tests_marker_with_exit_zero_is_failed() {
+    // init が "[no tests to run]" 相当を出して exit(0) しても、Test 関数があれば合格しない (#226)。
+    let cand = write_go(
+        "forged",
+        "package candidate\n\nimport (\n\t\"fmt\"\n\t\"os\"\n)\n\n\
+         func init() {\n\tfmt.Println(\"testing: warning: no tests to run\")\n\tos.Exit(0)\n}\n\n\
+         func Add(a, b int) int {\n\treturn a + b\n}\n",
+    );
+    let tests_dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tests_dir.path().join("c_test.go"),
+        "package candidate\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {\n\tt.Fatal(\"x\")\n}\n",
+    )
+    .unwrap();
+
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(cand.path())
+        .args(["--tests", tests_dir.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("❌ failed"))
+        .stdout(predicate::str::contains("85.0").not());
 }
 
 #[test]
