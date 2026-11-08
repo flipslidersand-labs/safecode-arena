@@ -452,8 +452,19 @@ fn run_rust_stages(
 
     let mut c = Command::new("cargo");
     // CARGO_TERM_COLOR=always(CI 既定)だと警告行に ANSI が付き件数を数えられないため色を切る。
-    c.args(["clippy", "--color", "never", "--", "-W", "clippy::all"])
-        .current_dir(root);
+    // `--force-warn` は候補先頭の `#![allow(...)]` による抑止でも警告を出させる (#237)。
+    // `warnings` グループは force-warn できない(E0602)ため、rustc 側は `unused` グループを指定する。
+    c.args([
+        "clippy",
+        "--color",
+        "never",
+        "--",
+        "--force-warn",
+        "clippy::all",
+        "--force-warn",
+        "unused",
+    ])
+    .current_dir(root);
     let (lint, lint_stderr) = runner::run_stage_capture("clippy", c, timeout);
     let lint_warnings = count_lint_warnings(&lint_stderr);
 
@@ -605,7 +616,7 @@ fn run_python_stages(
     let (lint, lint_warnings) = if ruff_available() {
         let mut l = Command::new("sh");
         l.arg("-c")
-            .arg("ruff check --output-format=concise candidate.py 1>&2; true")
+            .arg("ruff check --ignore-noqa --output-format=concise candidate.py 1>&2; true")
             .current_dir(root);
         let (outcome, out) = runner::run_stage_capture("ruff", l, timeout);
         if ruff_run_failed(&out) {
@@ -724,7 +735,7 @@ fn eslint_cmd(file: &str) -> String {
         Buffer,setTimeout,clearTimeout,setInterval,clearInterval,setImmediate,clearImmediate,\
         queueMicrotask,structuredClone,URL,URLSearchParams,TextEncoder,TextDecoder,fetch";
     format!(
-        "eslint --no-config-lookup --global {NODE_GLOBALS} --rule 'no-undef: error' --rule 'no-unused-vars: warn' {file} 2>&1; true"
+        "eslint --no-config-lookup --no-inline-config --global {NODE_GLOBALS} --rule 'no-undef: error' --rule 'no-unused-vars: warn' {file} 2>&1; true"
     )
 }
 
@@ -1848,6 +1859,8 @@ mod eslint_run_failed_tests {
         // ESLint 9+ で削除された --no-eslintrc と core 外の compact formatter を使わない (#152)
         let cmd = eslint_cmd("candidate.js");
         assert!(cmd.contains("--no-config-lookup"));
+        // 候補の `/* eslint-disable */` で指摘を消されない (#237)
+        assert!(cmd.contains("--no-inline-config"));
         assert!(cmd.contains("candidate.js"));
         assert!(cmd.contains("--global require,module,exports,"));
         assert!(!cmd.contains("--no-eslintrc"));
