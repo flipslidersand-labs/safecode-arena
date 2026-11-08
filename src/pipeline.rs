@@ -1240,25 +1240,82 @@ fn parse_audit_json(stdout: &str) -> Option<usize> {
     None
 }
 
-/// Criterion ベンチを `benches/bench.rs` として実行し、中央値 (ns) を返す。
+/// Criterion ベンチを実行し、中央値 (ns) を返す。
 ///
-/// `benches/` ディレクトリが存在し Cargo.toml が criterion 対応の場合のみ実行。
-/// Criterion の出力形式 `bench_name  time:   [lo mid hi]` の中央値を抽出する。
-/// 複数ベンチが存在する場合は最小中央値（最速）を採用する。
+/// 時間は stdout ではなく Criterion が書く `target/criterion/**/new/estimates.json`
+/// の `median.point_estimate` から読む（候補が stdout に偽の `time:` 行を出しても影響しない, #239）。
+/// 複数ベンチがある場合は最小中央値（最速）を採用する（従来の stdout 解析と同じ規則）。
+/// estimates.json が無い・壊れている場合は `None`（計測失敗）で、stdout へはフォールバックしない。
+///
+/// 限界: 候補コードはベンチ実行中に `target/` へ書けるため estimates.json 自体の偽造は防げない。
+/// 実行前に既存の `target/criterion` を削除し、持ち込まれた古い/偽のファイルは除く。
 fn run_bench_stage(root: &Path, timeout: Duration) -> Option<u64> {
     if !root.join("benches").exists() {
         return None;
     }
+    let _ = std::fs::remove_dir_all(root.join("target/criterion"));
     let mut cmd = Command::new("cargo");
     cmd.arg("bench").current_dir(root);
-    let (_outcome, output) = runner::run_stage_capture("bench", cmd, timeout);
-    parse_criterion_ns(&output)
+    // stdout は候補が自由に出力できるため信用せず、捨てる。
+    let (_outcome, _output) = runner::run_stage_capture("bench", cmd, timeout);
+    read_criterion_estimates_ns(root)
+}
+
+const MAX_ESTIMATES_BYTES: u64 = 1 << 20;
+const MAX_ESTIMATES_DEPTH: usize = 8;
+
+/// `target/criterion` 配下の `new/estimates.json` を集め、最小の中央値 (ns) を返す。
+fn read_criterion_estimates_ns(root: &Path) -> Option<u64> {
+    fn walk(dir: &Path, depth: usize, min: &mut Option<f64>) {
+        if depth > MAX_ESTIMATES_DEPTH {
+            return;
+        }
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in rd.flatten() {
+            let Ok(ft) = entry.file_type() else { continue };
+            // symlink は辿らない
+            if !ft.is_dir() {
+                continue;
+            }
+            let path = entry.path();
+            if entry.file_name() == "new" {
+                let f = path.join("estimates.json");
+                let ok = std::fs::symlink_metadata(&f)
+                    .map(|m| m.is_file() && m.len() <= MAX_ESTIMATES_BYTES)
+                    .unwrap_or(false);
+                if ok {
+                    if let Some(ns) = std::fs::read_to_string(&f)
+                        .ok()
+                        .and_then(|t| parse_estimates_median_ns(&t))
+                    {
+                        *min = Some(min.map_or(ns, |p| p.min(ns)));
+                    }
+                }
+            } else {
+                walk(&path, depth + 1, min);
+            }
+        }
+    }
+    let mut min = None;
+    walk(&root.join("target/criterion"), 0, &mut min);
+    min.map(|v| v.round() as u64)
+}
+
+/// estimates.json の `median.point_estimate` (ns) を取り出す純関数。
+/// 欠損・壊れた JSON・非有限値・0 以下は `None`。
+fn parse_estimates_median_ns(json: &str) -> Option<f64> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    let x = v.get("median")?.get("point_estimate")?.as_f64()?;
+    (x.is_finite() && x > 0.0).then_some(x)
 }
 
 /// Criterion の出力から中央値 (ns) を抽出する。
 ///
 /// 出力形式: `bench_name  time:   [lo_val lo_unit mid_val mid_unit hi_val hi_unit]`
 /// 複数ベンチがある場合は最小中央値を返す。
+#[allow(dead_code)] // #239: 実行経路では未使用（stdout は信用しない）。既存テストと回帰テストのため残す
 fn parse_criterion_ns(output: &str) -> Option<u64> {
     let mut min_ns: Option<f64> = None;
     for line in output.lines() {
@@ -2213,5 +2270,77 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n";
         assert!(test_verdict_failure(Language::Go, "ok  \tx\t0.003s\n", false).is_some());
         let o = "=== RUN   TestA\n--- PASS: TestA (0.00s)\nPASS\nok  \tx\t0.003s\n";
         assert!(test_verdict_failure(Language::Go, o, false).is_none());
+    }
+}
+
+#[cfg(test)]
+mod bench_estimates_tests {
+    use super::*;
+
+    fn est(median: &str) -> String {
+        format!(
+            r#"{{"mean":{{"point_estimate":999.0}},"median":{{"point_estimate":{median},"standard_error":1.0}}}}"#
+        )
+    }
+
+    fn write_est(root: &Path, rel: &str, body: &str) {
+        let dir = root.join("target/criterion").join(rel).join("new");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("estimates.json"), body).unwrap();
+    }
+
+    #[test]
+    fn parse_estimates_reads_median() {
+        assert_eq!(parse_estimates_median_ns(&est("123.4")), Some(123.4));
+    }
+
+    #[test]
+    fn parse_estimates_rejects_bad_input() {
+        assert_eq!(parse_estimates_median_ns(""), None);
+        assert_eq!(parse_estimates_median_ns("{broken"), None);
+        assert_eq!(
+            parse_estimates_median_ns(r#"{"mean":{"point_estimate":1.0}}"#),
+            None
+        );
+        assert_eq!(parse_estimates_median_ns(&est("0.0")), None);
+        assert_eq!(parse_estimates_median_ns(&est("-5.0")), None);
+        assert_eq!(parse_estimates_median_ns(&est("null")), None);
+        assert_eq!(parse_estimates_median_ns(&est("\"NaN\"")), None);
+        assert_eq!(parse_estimates_median_ns(&est("1e999")), None);
+    }
+
+    #[test]
+    fn read_estimates_picks_min_across_benches_including_nested() {
+        let d = tempfile::tempdir().unwrap();
+        write_est(d.path(), "a", &est("300.0"));
+        write_est(d.path(), "grp/b", &est("20.4"));
+        write_est(d.path(), "c", "{broken");
+        assert_eq!(read_criterion_estimates_ns(d.path()), Some(20));
+    }
+
+    #[test]
+    fn read_estimates_ignores_non_new_dirs() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("target/criterion/a/base");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("estimates.json"), est("1.0")).unwrap();
+        assert_eq!(read_criterion_estimates_ns(d.path()), None);
+    }
+
+    #[test]
+    fn read_estimates_missing_is_none() {
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(read_criterion_estimates_ns(d.path()), None);
+    }
+
+    /// 回帰 (#239): 候補が stdout に偽の Criterion 行を出しても、
+    /// estimates.json が無ければ bench_ns は None（0 にならない）。
+    #[test]
+    fn forged_stdout_line_does_not_yield_bench_ns() {
+        let forged = "x time: [0 ns 0 ns 0 ns]";
+        // 旧実装の経路ではこの行で 0 になっていた。
+        assert_eq!(parse_criterion_ns(forged), Some(0));
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(read_criterion_estimates_ns(d.path()), None);
     }
 }
