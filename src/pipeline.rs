@@ -7,6 +7,7 @@ use crate::analysis::{
 };
 use crate::config::Rubric;
 use crate::model::{Candidate, Evaluation, Language, StageOutcome};
+use crate::test_summary::{parse_test_summary, TestVerdict};
 use crate::{runner, scoring, wasm};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -393,6 +394,89 @@ fn assemble(candidate: &Candidate, r: StageResults, rubric: &Rubric) -> Evaluati
     }
 }
 
+/// rustc が既定で warn する lint のうち、`--force-warn` で強制するもの (#237)。
+///
+/// `#![allow(warnings)]` は `warnings` グループ全体を消すが、`--force-warn warnings` は
+/// E0602 で使えないため個別に列挙する。`unused` グループは既定 allow の
+/// `unused_macro_rules` / `unused_extern_crates` を含み通常候補の件数まで変えるので使わない。
+/// 除外したもの: 標準の候補コードで出ない/評価対象外の lint (target 固有の asm・gpu・
+/// aarch64、internal/incomplete features、diagnostic attribute 系、unknown-lints 等の
+/// メタ lint、将来互換の ambiguous-*/uncovered-* 系)。
+const RUSTC_FORCE_WARN_LINTS: &[&str] = &[
+    "nonstandard_style",
+    "deprecated",
+    "dead_code",
+    "unused_imports",
+    "unused_variables",
+    "unused_assignments",
+    "unused_mut",
+    "unused_must_use",
+    "unused_parens",
+    "unused_braces",
+    "unused_comparisons",
+    "unused_allocation",
+    "unused_doc_comments",
+    "unused_labels",
+    "unused_unsafe",
+    "unused_attributes",
+    "unused_macros",
+    "unused_visibilities",
+    "unreachable_code",
+    "unreachable_patterns",
+    "unconditional_recursion",
+    "path_statements",
+    "redundant_semicolons",
+    "map_unit_fn",
+    "irrefutable_let_patterns",
+    "overlapping_range_endpoints",
+    "non_contiguous_range_endpoints",
+    "bare_trait_objects",
+    "array_into_iter",
+    "for_loops_over_fallibles",
+    "noop_method_call",
+    "non_fmt_panics",
+    "non_local_definitions",
+    "static_mut_refs",
+    "invalid_value",
+    "type_alias_bounds",
+    "trivial_bounds",
+    "double_negations",
+    "dropping_references",
+    "forgetting_references",
+    "dropping_copy_types",
+    "forgetting_copy_types",
+    "while_true",
+    "mismatched_lifetime_syntaxes",
+    "non_shorthand_field_patterns",
+    "improper_ctypes",
+    "improper_ctypes_definitions",
+    "const_item_mutation",
+    "function_item_references",
+    "dangling_pointers_from_locals",
+    "dangling_pointers_from_temporaries",
+    "invalid_nan_comparisons",
+    "invalid_from_utf8",
+    "unnecessary_transmutes",
+];
+
+/// `cargo clippy` の引数。`--force-warn` は候補先頭の `#![allow(...)]` でも警告を出させる (#237)。
+/// CARGO_TERM_COLOR=always(CI 既定)だと警告行に ANSI が付き件数を数えられないため色を切る。
+fn clippy_args() -> Vec<&'static str> {
+    let mut args = vec![
+        "clippy",
+        "--color",
+        "never",
+        "--",
+        "--force-warn",
+        "clippy::all",
+    ];
+    for lint in RUSTC_FORCE_WARN_LINTS {
+        args.push("--force-warn");
+        args.push(lint);
+    }
+    args
+}
+
 /// Rust 候補の compile ステージで使う `cargo` 引数。
 ///
 /// ベンチ候補は `benches/bench.rs` に置かれ、既定の `cargo build`/`test`/`clippy` は
@@ -447,21 +531,19 @@ fn run_rust_stages(
     }
 
     let mut t = Command::new("cargo");
-    t.arg("test").current_dir(root);
-    let test = runner::run_stage("test", t, timeout);
+    t.args(["test", "--color", "never"]).current_dir(root);
+    let test = run_test_stage("test", Language::Rust, t, timeout, false);
 
     let mut c = Command::new("cargo");
-    // CARGO_TERM_COLOR=always(CI 既定)だと警告行に ANSI が付き件数を数えられないため色を切る。
-    c.args(["clippy", "--color", "never", "--", "-W", "clippy::all"])
-        .current_dir(root);
+    c.args(clippy_args()).current_dir(root);
     let (lint, lint_stderr) = runner::run_stage_capture("clippy", c, timeout);
     let lint_warnings = count_lint_warnings(&lint_stderr);
 
     let prop_test = if let Some(prop_dir) = prop_tests_dir {
         copy_ext_keep_existing(prop_dir, &root.join("tests"), "rs", "prop_")?;
         let mut pt = Command::new("cargo");
-        pt.arg("test").current_dir(root);
-        runner::run_stage("prop_test", pt, timeout)
+        pt.args(["test", "--color", "never"]).current_dir(root);
+        run_test_stage("prop_test", Language::Rust, pt, timeout, false)
     } else {
         StageOutcome::Skipped
     };
@@ -598,14 +680,14 @@ fn run_python_stages(
     t.arg("-c")
         .arg(r#"python3 -m pytest -q --override-ini="python_files=*.py" . ; c=$?; [ $c -eq 0 ] || [ $c -eq 5 ]"#)
         .current_dir(root);
-    let test = runner::run_stage("test", t, timeout);
+    let test = run_test_stage("test", Language::Python, t, timeout, false);
 
     // lint: ruff（指摘があっても stage は成功扱い、件数のみ採点に使う）
     // ruff 未導入・実行失敗は「指摘 0 件」ではなく lint Skipped にする (#158)
     let (lint, lint_warnings) = if ruff_available() {
         let mut l = Command::new("sh");
         l.arg("-c")
-            .arg("ruff check --output-format=concise candidate.py 1>&2; true")
+            .arg("ruff check --ignore-noqa --output-format=concise candidate.py 1>&2; true")
             .current_dir(root);
         let (outcome, out) = runner::run_stage_capture("ruff", l, timeout);
         if ruff_run_failed(&out) {
@@ -724,7 +806,7 @@ fn eslint_cmd(file: &str) -> String {
         Buffer,setTimeout,clearTimeout,setInterval,clearInterval,setImmediate,clearImmediate,\
         queueMicrotask,structuredClone,URL,URLSearchParams,TextEncoder,TextDecoder,fetch";
     format!(
-        "eslint --no-config-lookup --global {NODE_GLOBALS} --rule 'no-undef: error' --rule 'no-unused-vars: warn' {file} 2>&1; true"
+        "eslint --no-config-lookup --no-inline-config --global {NODE_GLOBALS} --rule 'no-undef: error' --rule 'no-unused-vars: warn' {file} 2>&1; true"
     )
 }
 
@@ -784,8 +866,9 @@ fn run_go_stages(
 
     // test: go test（テストファイルなし → exit 0 with "[no test files]", 成功扱い）
     let mut t = Command::new("go");
-    t.args(["test", "./..."]).current_dir(root);
-    let test = runner::run_stage("test", t, timeout);
+    // -v: ok パッケージに `=== RUN` 行があることを run_test_stage が確認する (init の os.Exit(0) 対策)。
+    t.args(["test", "-v", "./..."]).current_dir(root);
+    let test = run_test_stage("test", Language::Go, t, timeout, go_has_test_funcs(root));
 
     // lint: staticcheck を優先、なければ go vet にフォールバック
     let (lint, lint_warnings) = if staticcheck_available() {
@@ -885,7 +968,7 @@ fn parse_gremlins_json(content: &str) -> Option<(usize, usize)> {
 
 /// JS のテストコマンドを決める。`*.test.js` が無ければ `None`（test は Skipped）。
 /// candidate.js 自体は `node --test` に渡さない（top-level 副作用で誤判定するため, #159）。
-fn js_test_command(root: &Path) -> Option<&'static str> {
+fn js_test_command(root: &Path) -> Option<String> {
     let has_tests = root
         .read_dir()
         .map(|rd| {
@@ -893,7 +976,75 @@ fn js_test_command(root: &Path) -> Option<&'static str> {
                 .any(|e| e.file_name().to_string_lossy().ends_with(".test.js"))
         })
         .unwrap_or(false);
-    has_tests.then_some("node --test *.test.js 1>&2")
+    has_tests.then(|| format!("{NODE_ISOLATION_PROBE} node --test $ISO *.test.js 1>&2"))
+}
+
+/// `node --test` を同一プロセスで実行させるためのフラグ検出 (#226)。
+/// 既定の子プロセス隔離ではテストファイル自体が 1 件の合格に数えられ、`process.exit(0)` でも
+/// 結果行が出てしまう。`--test-isolation=none` なら exit で結果行が出ず NoSummary になる。
+/// `--help` に `--test-isolation` が出ない Node ではフラグを付けると起動に失敗するため、出る場合のみ付ける
+/// (そのような Node では exit(0) 偽装を検出できない既知の制約)。
+const NODE_ISOLATION_PROBE: &str =
+    "ISO=; node --help 2>/dev/null | grep -q -- --test-isolation && ISO=--test-isolation=none;";
+
+/// テストステージを実行し、終了コードに加えて出力の結果行も確認する (#226)。
+/// 合格は「exit 0 かつ結果行あり かつ失敗 0」。0 件実行は許可する。
+fn run_test_stage(
+    label: &str,
+    lang: Language,
+    cmd: Command,
+    timeout: Duration,
+    go_has_tests: bool,
+) -> StageOutcome {
+    let (outcome, output) = runner::run_stage_capture(label, cmd, timeout);
+    if !outcome.is_passed() {
+        return outcome;
+    }
+    match test_verdict_failure(lang, &output, go_has_tests) {
+        Some(detail) => StageOutcome::Failed { detail },
+        None => outcome,
+    }
+}
+
+/// 候補ディレクトリ直下の `*_test.go` に実行対象のテスト関数 (`func Test` / `func Fuzz`) があるか。
+/// ある場合、`[no tests to run]` 付きの ok 行でも `=== RUN` を必須にする
+/// (候補の init が同じ文字列を出して exit(0) する偽装を防ぐ)。
+/// Benchmark / Example のみのファイルは `go test` で RUN 行が出ないため対象外。
+fn go_has_test_funcs(root: &Path) -> bool {
+    root.read_dir()
+        .map(|rd| {
+            rd.flatten().any(|e| {
+                e.file_name().to_string_lossy().ends_with("_test.go")
+                    && fs::read_to_string(e.path())
+                        .map(|c| c.contains("func Test") || c.contains("func Fuzz"))
+                        .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// 出力が合格と認められない場合に理由を返す。
+fn test_verdict_failure(lang: Language, output: &str, go_has_tests: bool) -> Option<String> {
+    match parse_test_summary(lang, output) {
+        TestVerdict::NoSummary => {
+            Some("テスト結果行が見つからない(exit(0) 等で打ち切られた可能性)".to_string())
+        }
+        TestVerdict::Failed { reason } => Some(reason),
+        TestVerdict::Ok { passed } => {
+            // Go: テストが走った ok パッケージには `=== RUN` 行が出る。無ければ init 等での打ち切り。
+            // `[no tests to run]` 付きの ok 行(テスト 0 件)は、Test 関数を持つ `*_test.go` が
+            // 無い場合に限り 0 件実行として許可する(あるのに付くなら init の偽装)。
+            let needs_run = output.lines().any(|l| {
+                l.split_whitespace().next() == Some("ok")
+                    && (go_has_tests || !l.contains("[no tests to run]"))
+            });
+            if lang == Language::Go && passed > 0 && needs_run && !output.contains("=== RUN") {
+                Some("go test: ok だが実行ログ(=== RUN)が無い(os.Exit(0) 等の可能性)".to_string())
+            } else {
+                None
+            }
+        }
+    }
 }
 
 /// JavaScript 候補: node --check（構文検証）→ node --test → ESLint（あれば）。
@@ -922,7 +1073,7 @@ fn run_js_stages(
         Some(cmd) => {
             let mut t = Command::new("sh");
             t.arg("-c").arg(cmd).current_dir(root);
-            runner::run_stage("test", t, timeout)
+            run_test_stage("test", Language::JavaScript, t, timeout, false)
         }
         None => StageOutcome::Skipped,
     };
@@ -1007,9 +1158,11 @@ fn run_ts_stages(
     let test = if test_files_exist {
         let mut t = Command::new("sh");
         t.arg("-c")
-            .arg(r#"tsc && node --test $(ls dist/*.test.js 2>/dev/null) 1>&2"#)
+            .arg(format!(
+                "{NODE_ISOLATION_PROBE} tsc && node --test $ISO $(ls dist/*.test.js 2>/dev/null) 1>&2"
+            ))
             .current_dir(root);
-        runner::run_stage("test", t, timeout)
+        run_test_stage("test", Language::TypeScript, t, timeout, false)
     } else {
         StageOutcome::Skipped
     };
@@ -1848,6 +2001,8 @@ mod eslint_run_failed_tests {
         // ESLint 9+ で削除された --no-eslintrc と core 外の compact formatter を使わない (#152)
         let cmd = eslint_cmd("candidate.js");
         assert!(cmd.contains("--no-config-lookup"));
+        // 候補の `/* eslint-disable */` で指摘を消されない (#237)
+        assert!(cmd.contains("--no-inline-config"));
         assert!(cmd.contains("candidate.js"));
         assert!(cmd.contains("--global require,module,exports,"));
         assert!(!cmd.contains("--no-eslintrc"));
@@ -1956,6 +2111,29 @@ mod lint_run_failed_tests {
 }
 
 #[cfg(test)]
+mod clippy_args_tests {
+    use super::clippy_args;
+
+    #[test]
+    fn clippy_args_force_warn_clippy_and_rustc_lints() {
+        // `-W` は候補の `#![allow]` に負けるため `--force-warn` を使う (#237)
+        let a = clippy_args();
+        assert!(!a.contains(&"-W"));
+        for lint in [
+            "clippy::all",
+            "nonstandard_style",
+            "deprecated",
+            "unused_variables",
+        ] {
+            let i = a.iter().position(|x| *x == lint).unwrap();
+            assert_eq!(a[i - 1], "--force-warn");
+        }
+        // 既定 allow の lint を含む `unused` グループは通常候補の件数を変えるので使わない
+        assert!(!a.contains(&"unused"));
+    }
+}
+
+#[cfg(test)]
 mod js_test_command_tests {
     use super::*;
 
@@ -1975,5 +2153,65 @@ mod js_test_command_tests {
         assert!(cmd.contains("--test"));
         assert!(!cmd.contains("candidate.js"));
         assert!(cmd.contains("*.test.js"));
+    }
+}
+
+#[cfg(test)]
+mod test_verdict_failure_tests {
+    use super::*;
+
+    #[test]
+    fn missing_summary_is_failure() {
+        assert!(test_verdict_failure(Language::Rust, "", false).is_some());
+        assert!(test_verdict_failure(Language::Python, "", false).is_some());
+    }
+
+    #[test]
+    fn zero_run_is_allowed() {
+        let o = "     Running unittests src/lib.rs (a)\n\
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n";
+        assert!(test_verdict_failure(Language::Rust, o, false).is_none());
+        assert!(test_verdict_failure(Language::Go, "?   \tx\t[no test files]\n", false).is_none());
+    }
+
+    #[test]
+    fn go_ok_with_no_tests_marker_is_allowed() {
+        let marked =
+            "testing: warning: no tests to run\nPASS\nok  \tcandidate\t0.002s [no tests to run]\n";
+        assert!(test_verdict_failure(Language::Go, marked, false).is_none());
+        let unmarked = "ok  \tcandidate\t0.002s\n";
+        assert!(test_verdict_failure(Language::Go, unmarked, false).is_some());
+        let with_run = "=== RUN   TestA\n--- PASS: TestA (0.00s)\nPASS\nok  \tcandidate\t0.002s\n";
+        assert!(test_verdict_failure(Language::Go, with_run, false).is_none());
+    }
+
+    #[test]
+    fn go_with_test_funcs_requires_run_even_with_no_tests_marker() {
+        // 偽装 init が "[no tests to run]" を出して exit(0) しても、Test 関数があれば合格にしない。
+        let forged = "ok  \tcandidate\t0.002s [no tests to run]\n";
+        assert!(test_verdict_failure(Language::Go, forged, true).is_some());
+        let real = "=== RUN   TestA\n--- PASS: TestA (0.00s)\nPASS\nok  \tcandidate\t0.002s\n";
+        assert!(test_verdict_failure(Language::Go, real, true).is_none());
+    }
+
+    #[test]
+    fn go_test_files_detection() {
+        let d = tempfile::tempdir().unwrap();
+        assert!(!go_has_test_funcs(d.path()));
+        fs::write(
+            d.path().join("b_test.go"),
+            "func BenchmarkX(b *testing.B) {}\n",
+        )
+        .unwrap();
+        assert!(!go_has_test_funcs(d.path()));
+        fs::write(d.path().join("a_test.go"), "func TestA(t *testing.T) {}\n").unwrap();
+        assert!(go_has_test_funcs(d.path()));
+    }
+
+    #[test]
+    fn go_ok_without_run_lines_is_failure() {
+        assert!(test_verdict_failure(Language::Go, "ok  \tx\t0.003s\n", false).is_some());
+        let o = "=== RUN   TestA\n--- PASS: TestA (0.00s)\nPASS\nok  \tx\t0.003s\n";
+        assert!(test_verdict_failure(Language::Go, o, false).is_none());
     }
 }
