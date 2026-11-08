@@ -161,7 +161,7 @@ impl Store {
         Ok(map)
     }
 
-    /// 指定 run の候補 ID → 比較用スコア（performance 除く）。
+    /// 指定 run の候補 ID → 比較用スコア（performance・reasoning 除く）。
     /// detail_json に axes が無く計算できない行は含めない（比較対象外）。
     pub fn run_comparable_scores(&self, run_id: i64) -> Result<HashMap<String, f64>> {
         let mut stmt = self
@@ -368,6 +368,17 @@ mod tests {
         let prev = s.run_comparable_scores(run).unwrap();
         let curr = vec![eval_axes("a", 60.0, 0.0)];
         assert!(find_regressions(&prev, &curr, 1.0).is_empty());
+    }
+
+    #[test]
+    fn comparable_score_ignores_current_reasoning() {
+        // 現在側に reasoning があっても、他軸が同じなら回帰にならず、スコアも変わらない
+        let mut cur = eval_axes("a", 60.0, 0.0);
+        cur.axes.reasoning = 20.0;
+        assert_eq!(comparable_score(&cur.axes), 60.0);
+        let mut prev = HashMap::new();
+        prev.insert("a".to_string(), 60.0);
+        assert!(find_regressions(&prev, &[cur], 1.0).is_empty());
     }
 
     #[test]
