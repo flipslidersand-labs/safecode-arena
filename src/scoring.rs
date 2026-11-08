@@ -227,10 +227,17 @@ pub fn assign_performance_each(evals: &mut [Evaluation], rubrics: &[Rubric]) {
         rubrics.len(),
         "evals と rubrics の長さが不一致"
     );
-    // 全候補が bench_ns を持つときだけ bench_ns で比較する。
-    // bench 付きと無しが混在するときは尺度が違うため、全員 compile+test 時間で比較する
-    // （bench 無しの候補を 0 点にしない）。
-    let use_bench = !evals.is_empty() && evals.iter().all(|e| e.bench_ns.is_some());
+    // compile と test が通った候補が全員 bench_ns を持つときだけ bench_ns で比較する
+    // （compile 失敗の候補は bench_ns=None になるため判定から除く）。
+    // 通った候補に bench 付きと無しが混在するときは尺度が違うため、全員 compile+test 時間で
+    // 比較する（bench 無しの候補を 0 点にしない）。
+    // 注意: 時間比較モードでは bench 候補が Criterion 依存のビルド込みで不利になり得る。
+    // また bench 計測失敗（解析不能/タイムアウト）の 1 件で全員が時間比較に切り替わる。
+    let mut passed_iter = evals
+        .iter()
+        .filter(|e| e.compile.is_passed() && e.test.is_passed())
+        .peekable();
+    let use_bench = passed_iter.peek().is_some() && passed_iter.all(|e| e.bench_ns.is_some());
     let times: Vec<Option<u64>> = evals
         .iter()
         .map(|e| {
@@ -724,6 +731,23 @@ mod tests {
         assert_eq!(evals[1].axes.performance, 0.0);
     }
 
+    #[test]
+    fn all_passed_have_bench_plus_compile_failed_uses_bench() {
+        let r = Rubric::default();
+        // compile 失敗の候補は実際には bench_ns=None。通った候補が全員 bench 付きなら bench で比較。
+        let mut broken = bench_eval("broken", None, 1, passed(0));
+        broken.compile = failed();
+        let mut evals = vec![
+            bench_eval("a", Some(100), 500, passed(0)),
+            bench_eval("b", Some(400), 10, passed(0)),
+            broken,
+        ];
+        assign_performance(&mut evals, &r);
+        assert_eq!(evals[0].axes.performance, r.performance);
+        assert!((evals[1].axes.performance - r.performance * 0.25).abs() < 1e-9);
+        assert_eq!(evals[2].axes.performance, 0.0);
+    }
+
     fn perf_eval(ms: u64) -> Evaluation {
         Evaluation {
             candidate_id: "c".into(),
@@ -1044,11 +1068,10 @@ mod tests {
     #[test]
     fn performance_bench_only_on_failed_candidate_uses_time_for_others() {
         let r = Rubric::default();
-        // bench を持つのが compile 失敗の候補だけ → 混在なので時間比較。
+        // compile 失敗の候補は bench_ns=None（pipeline の実際の形）。
         // 失敗候補は 0、もう一方は唯一の採点対象で満点。
         let mut broken = perf_eval(1);
         broken.compile = failed();
-        broken.bench_ns = Some(5);
         let mut evals = vec![broken, perf_eval(1)];
         assign_performance(&mut evals, &r);
         assert_eq!(evals[0].axes.performance, 0.0);
