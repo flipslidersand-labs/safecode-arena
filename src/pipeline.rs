@@ -702,13 +702,30 @@ fn eslint_available() -> bool {
 ///
 /// `eslint ... 2>&1; true` は終了コードを捨てるため、失敗が「指摘 0 件」に化けるのを防ぐ (#152)。
 fn eslint_run_failed(output: &str) -> bool {
-    const MARKERS: [&str; 4] = [
+    const MARKERS: [&str; 5] = [
         "Oops! Something went wrong",
         "Invalid option '--",
         "formatter is no longer part of core ESLint",
         "couldn't find an eslint.config",
+        // flat config の既定は .js 系のみ。.ts は lint されず 1 warning に化ける
+        "File ignored because no matching configuration",
     ];
     MARKERS.iter().any(|m| output.contains(m))
+}
+
+/// 設定ファイルなしで最小ルールだけを当てる ESLint 9+ (flat config) 向けコマンド。
+///
+/// 出力は既定の stylish (`✖ N problems`)。ESLint 8 は `--no-config-lookup` を
+/// `Invalid option` で拒否するので `eslint_run_failed` で Skipped になる (#152)。
+/// 設定なしの flat config は Node の globals を持たないため、`--global` で渡して
+/// CommonJS の `module.exports` 等が no-undef に化けないようにする。
+fn eslint_cmd(file: &str) -> String {
+    const NODE_GLOBALS: &str = "require,module,exports,__dirname,__filename,console,process,\
+        Buffer,setTimeout,clearTimeout,setInterval,clearInterval,setImmediate,clearImmediate,\
+        queueMicrotask,structuredClone,URL,URLSearchParams,TextEncoder,TextDecoder,fetch";
+    format!(
+        "eslint --no-config-lookup --global {NODE_GLOBALS} --rule 'no-undef: error' --rule 'no-unused-vars: warn' {file} 2>&1; true"
+    )
 }
 
 /// `ruff` が PATH に存在するか確認する。
@@ -910,11 +927,11 @@ fn run_js_stages(
         None => StageOutcome::Skipped,
     };
 
-    // lint: ESLint があれば --no-eslintrc + 最小ルールで実行
+    // lint: ESLint があれば設定ファイルなし + 最小ルールで実行
     let (lint, lint_warnings) = if eslint_available() {
         let mut l = Command::new("sh");
         l.arg("-c")
-            .arg(r#"eslint --no-eslintrc --rule 'no-undef: error' --rule 'no-unused-vars: warn' --format compact candidate.js 2>&1; true"#)
+            .arg(eslint_cmd("candidate.js"))
             .current_dir(root);
         let (outcome, out) = runner::run_stage_capture("eslint", l, timeout);
         if eslint_run_failed(&out) {
@@ -1001,7 +1018,7 @@ fn run_ts_stages(
     let (lint, lint_warnings) = if eslint_available() {
         let mut l = Command::new("sh");
         l.arg("-c")
-            .arg(r#"eslint --no-eslintrc --rule 'no-undef: error' --rule 'no-unused-vars: warn' --format compact candidate.ts 2>&1; true"#)
+            .arg(eslint_cmd("candidate.ts"))
             .current_dir(root);
         let (outcome, out) = runner::run_stage_capture("eslint", l, timeout);
         if eslint_run_failed(&out) {
@@ -1824,7 +1841,18 @@ mod copy_assemble_tests {
 
 #[cfg(test)]
 mod eslint_run_failed_tests {
-    use super::eslint_run_failed;
+    use super::{eslint_cmd, eslint_run_failed};
+
+    #[test]
+    fn eslint_cmd_uses_flat_config_flags() {
+        // ESLint 9+ で削除された --no-eslintrc と core 外の compact formatter を使わない (#152)
+        let cmd = eslint_cmd("candidate.js");
+        assert!(cmd.contains("--no-config-lookup"));
+        assert!(cmd.contains("candidate.js"));
+        assert!(cmd.contains("--global require,module,exports,"));
+        assert!(!cmd.contains("--no-eslintrc"));
+        assert!(!cmd.contains("compact"));
+    }
 
     #[test]
     fn detects_invalid_option() {
@@ -1844,6 +1872,21 @@ mod eslint_run_failed_tests {
     fn detects_missing_compact_formatter() {
         assert!(eslint_run_failed(
             "The compact formatter is no longer part of core ESLint. Install it manually with `npm install -D eslint-formatter-compact`"
+        ));
+    }
+
+    #[test]
+    fn detects_file_ignored_without_matching_config() {
+        // ESLint 10.2.0 + --no-config-lookup で .ts を渡したときの実出力 (#152)
+        assert!(eslint_run_failed(
+            "\n/tmp/x/candidate.ts\n  0:0  warning  File ignored because no matching configuration was supplied\n\n\u{2716} 1 problem (0 errors, 1 warning)\n"
+        ));
+    }
+
+    #[test]
+    fn detects_eslint8_rejecting_no_config_lookup() {
+        assert!(eslint_run_failed(
+            "Invalid option '--config-lookup' - perhaps you meant '--config'?"
         ));
     }
 
