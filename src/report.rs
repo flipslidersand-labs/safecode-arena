@@ -131,8 +131,9 @@ fn render_summary_table(out: &mut String, evals: &[Evaluation]) {
     }
     if let Some(best) = evals.first() {
         out.push_str(&format!(
-            "\n**採用候補**: `{}`（{:.1}点）\n\n",
-            best.candidate_id, best.score
+            "\n**採用候補**: {}（{:.1}点）\n\n",
+            inline_code(&best.candidate_id),
+            best.score
         ));
     }
 }
@@ -149,10 +150,10 @@ fn render_candidate_details(out: &mut String, evals: &[Evaluation]) {
 
     for (i, e) in evals.iter().enumerate() {
         out.push_str(&format!(
-            "### {} {}位: `{}` — {:.1} 点\n\n",
+            "### {} {}位: {} — {:.1} 点\n\n",
             medal(i),
             i + 1,
-            e.candidate_id,
+            inline_code(&e.candidate_id),
             e.score
         ));
 
@@ -239,6 +240,30 @@ pub(crate) fn fence_for(content: &str) -> String {
         }
     }
     "`".repeat((longest + 1).max(3))
+}
+
+/// `content` をインラインコードとして包む。区切りは内容中の最長バッククォート連続より長くし、
+/// 内容が先頭/末尾にバッククォートを持つ場合(空白のみでない場合)は前後に空白 1 つを付ける。
+fn inline_code(content: &str) -> String {
+    let mut longest = 0usize;
+    let mut run = 0usize;
+    for c in content.chars() {
+        if c == '`' {
+            run += 1;
+            longest = longest.max(run);
+        } else {
+            run = 0;
+        }
+    }
+    let delim = "`".repeat(longest + 1);
+    let pad = if (content.starts_with('`') || content.ends_with('`'))
+        && !content.chars().all(|c| c == ' ')
+    {
+        " "
+    } else {
+        ""
+    };
+    format!("{delim}{pad}{content}{pad}{delim}")
 }
 
 fn render_comparison(out: &mut String, evals: &[Evaluation]) {
@@ -783,6 +808,42 @@ mod tests {
         let close = lines.iter().rposition(|l| *l == fence).unwrap();
         assert!(lines[open + 1..close].contains(&"# injected heading"));
         assert!(lines[close + 1..].iter().all(|l| l.trim().is_empty()));
+    }
+
+    #[test]
+    fn md_inline_code_candidate_id_with_backticks_stays_one_span() {
+        for (id, want) in [
+            ("a`b", "``a`b``"),
+            ("a``b", "```a``b```"),
+            ("`a", "`` `a ``"),
+            ("a`", "`` a` ``"),
+            ("`a`", "`` `a` ``"),
+        ] {
+            let md = render(&[eval(id, 50.0), eval("zz", 40.0)]);
+            assert!(
+                md.contains(&format!("**採用候補**: {want}（50.0点）")),
+                "best line for {id}: {md}"
+            );
+            assert!(
+                md.contains(&format!("位: {want} — 50.0 点")),
+                "detail heading for {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn md_inline_code_plain_candidate_id_unchanged() {
+        let md = render(&[eval("plain-id", 50.0), eval("zz", 40.0)]);
+        assert!(md.contains("**採用候補**: `plain-id`（50.0点）"));
+        assert!(md.contains("位: `plain-id` — 50.0 点"));
+    }
+
+    #[test]
+    fn inline_code_delimiter_rules() {
+        assert_eq!(inline_code("x"), "`x`");
+        assert_eq!(inline_code("a`b"), "``a`b``");
+        assert_eq!(inline_code("`a"), "`` `a ``");
+        assert_eq!(inline_code("  "), "`  `");
     }
 
     #[test]
