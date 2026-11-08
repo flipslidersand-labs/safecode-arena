@@ -68,7 +68,8 @@ fn is_allowed_env(name: &str) -> bool {
 }
 
 /// 子の環境を許可リストだけに絞る。呼び出し側が `Command::env` で明示した値は、
-/// 許可リストに含まれるものだけ残す。
+/// 許可リストに含まれるものだけ残す。呼び出し側が `env_remove` した変数でも、
+/// 許可リストにあれば親の値が入り直す。
 fn apply_env_allowlist(cmd: &mut std::process::Command) {
     let explicit: Vec<(std::ffi::OsString, std::ffi::OsString)> = cmd
         .get_envs()
@@ -239,12 +240,10 @@ mod tests {
         // 親の環境は変更せず、Command 側で明示設定した値も許可リスト外なら消えることを確認する。
         // (親由来の継承は apply_env_allowlist が vars_os を同じ判定で濾過する。)
         let mut cmd = Command::new("sh");
-        cmd.env("ANTHROPIC_API_KEY", "dummy-secret")
-            .env("PATH_PROBE_OK", "x")
-            .args([
-                "-c",
-                "echo key=${ANTHROPIC_API_KEY:-unset} path=${PATH:+set}",
-            ]);
+        cmd.env("ANTHROPIC_API_KEY", "dummy-secret").args([
+            "-c",
+            "echo key=${ANTHROPIC_API_KEY:-unset} path=${PATH:+set}",
+        ]);
         let (outcome, captured) = run_stage_capture("env", cmd, Duration::from_secs(5));
         assert!(outcome.is_passed());
         assert!(captured.contains("key=unset"), "{captured}");

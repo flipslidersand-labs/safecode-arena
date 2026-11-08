@@ -616,3 +616,39 @@ fn generate_with_missing_spec_fails_before_calling_llm() {
         .failure()
         .stderr(predicate::str::contains("spec ファイルの読込に失敗"));
 }
+
+/// 親(safecode 本体)の環境にある API キー相当の値が、候補コードの実行(cargo test)に
+/// 継承されず、失敗 detail 経由でレポートへ漏れないこと (#225)。
+#[test]
+fn evaluate_does_not_leak_parent_env_secret_to_candidate() {
+    let cand = write_candidate(
+        "envprobe",
+        r#"pub fn probe() -> i32 { 1 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn reads_env() {
+        let v = std::env::var("ANTHROPIC_API_KEY").unwrap_or_else(|_| "ENVPROBE_UNSET".into());
+        panic!("ENVPROBE_RESULT={v}");
+    }
+}
+"#,
+    );
+
+    let out = Command::cargo_bin("safecode")
+        .unwrap()
+        .env("ANTHROPIC_API_KEY", "dummy-secret-for-test")
+        .args(["evaluate", "--format", "json"])
+        .arg(cand.path())
+        .output()
+        .unwrap();
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // 候補のテストが実際に走り、キーが見えなかったことを示す。
+    assert!(all.contains("ENVPROBE_RESULT=ENVPROBE_UNSET"), "{all}");
+    assert!(!all.contains("dummy-secret-for-test"), "{all}");
+}
