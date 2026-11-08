@@ -158,10 +158,11 @@ fn db_persists_runs_and_detects_regression() {
         .success()
         .stderr(predicate::str::contains("run #1 を保存"));
 
-    // run #2: 未使用変数で lint 警告 → スコア下落 → リグレッション
+    // run #2: 未使用変数 2 件で lint 警告 → スコア下落 → リグレッション
+    // (警告 1 件の減点は 0.8 点でしきい値 1.0 未満のため 2 件にする。#248 でまとめ行を数えなくなった)
     std::fs::write(
         &subject,
-        "pub fn add(a: i32, b: i32) -> i32 { let x = 1; a + b }\n",
+        "pub fn add(a: i32, b: i32) -> i32 { let x = 1; let y = 2; a + b }\n",
     )
     .unwrap();
     Command::cargo_bin("safecode")
@@ -581,12 +582,15 @@ fn db_previous_candidate_dropped_by_eval_error_fails() {
     std::fs::write(&keep, "pub fn add(a: i32, b: i32) -> i32 { a + b }\n").unwrap();
     std::fs::write(&flaky, "def f():\n    return 1\n").unwrap();
 
-    // run #1: 両方成功して保存される。
+    // run #1: 両方成功して保存される。比較キーは --tests の有無を含む（#243）ので run #2 と揃えて空の tests ディレクトリを渡す。
+    let tests_ok = work.path().join("tests_ok");
+    std::fs::create_dir_all(&tests_ok).unwrap();
     Command::cargo_bin("safecode")
         .unwrap()
         .arg("evaluate")
         .arg(&keep)
         .arg(&flaky)
+        .args(["--tests", tests_ok.to_str().unwrap()])
         .args(["--db", db.to_str().unwrap()])
         .assert()
         .success()
@@ -756,7 +760,7 @@ mod tests {
 fn rust_inner_allow_attribute_does_not_hide_clippy_warnings() {
     // rustc の unused_variables / nonstandard_style / deprecated と clippy の len_zero を含む。
     // 抑止属性を付けても 0 warn に化けない(clippy 側は `v.len() == 0` のみ)。
-    // 5 = bad_name + deprecated 利用 + 未使用変数 + len_zero + cargo のまとめ行(既存の数え方。別 Issue 予定)。
+    // 4 = bad_name + deprecated 利用 + 未使用変数 + len_zero(cargo のまとめ行は数えない。#248)。
     let cand = write_candidate(
         "sup",
         "#![allow(clippy::all, warnings)]\n\
@@ -774,7 +778,7 @@ fn rust_inner_allow_attribute_does_not_hide_clippy_warnings() {
         .arg(cand.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("5 warn"));
+        .stdout(predicate::str::contains("4 warn"));
 }
 
 #[test]

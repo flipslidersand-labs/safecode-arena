@@ -61,8 +61,25 @@ pub fn count_lint_warnings(stderr: &str) -> usize {
             l.starts_with("warning:")
                 && !l.contains("warnings emitted")
                 && !l.contains("warning emitted")
+                && !is_cargo_generated_summary(l)
         })
         .count()
+}
+
+/// cargo のクレート単位まとめ行
+/// (例: ``warning: `foo` (bin "foo") generated 2 warnings``) か判定する。
+fn is_cargo_generated_summary(line: &str) -> bool {
+    let Some(rest) = line.strip_prefix("warning: `") else {
+        return false;
+    };
+    let Some((_, after)) = rest.split_once("` (") else {
+        return false;
+    };
+    let Some((_, tail)) = after.split_once(") generated ") else {
+        return false;
+    };
+    let digits = tail.chars().take_while(|c| c.is_ascii_digit()).count();
+    digits > 0 && tail[digits..].starts_with(" warning")
 }
 
 /// ruff (`--output-format=concise`) の出力から指摘件数を数える。
@@ -181,6 +198,32 @@ mod tests {
     fn count_lint_warnings_ignores_summary() {
         let stderr =
             "warning: unused variable `x`\nwarning: unused import\nwarning: 2 warnings emitted\n";
+        assert_eq!(count_lint_warnings(stderr), 2);
+    }
+
+    #[test]
+    fn count_lint_warnings_ignores_cargo_generated_summary() {
+        let summaries = [
+            "warning: `foo` (bin \"foo\") generated 2 warnings",
+            "warning: `foo` (bin \"foo\") generated 1 warning",
+            "warning: `foo` (lib) generated 3 warnings",
+            "warning: `foo` (lib test) generated 1 warning",
+            "warning: `foo` (bin \"x\" test) generated 4 warnings",
+            "warning: `foo` (bin \"foo\") generated 1 warning (run `cargo fix --bin \"foo\"` to apply 1 suggestion)",
+        ];
+        for s in summaries {
+            let stderr = format!("warning: unused variable: `x`\n{s}\n");
+            assert_eq!(count_lint_warnings(&stderr), 1, "summary counted: {s}");
+        }
+        let two = "warning: unused variable: `x`\nwarning: unused import: `y`\n\
+                   warning: `foo` (bin \"foo\") generated 2 warnings\n";
+        assert_eq!(count_lint_warnings(two), 2);
+    }
+
+    #[test]
+    fn count_lint_warnings_keeps_diagnostics_mentioning_generated() {
+        let stderr =
+            "warning: unused variable: `generated`\nwarning: field `generated` is never read\n";
         assert_eq!(count_lint_warnings(stderr), 2);
     }
 
