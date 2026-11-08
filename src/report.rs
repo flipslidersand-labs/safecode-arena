@@ -593,4 +593,398 @@ mod tests {
         assert!(!html.contains("<th>資源"));
         assert!(html.contains("<td>resource_usage</td>"));
     }
+
+    // ── Markdown render() ────────────────────────────────────────────────────
+
+    fn passed(ms: u64) -> StageOutcome {
+        StageOutcome::Passed { duration_ms: ms }
+    }
+
+    fn failed(detail: &str) -> StageOutcome {
+        StageOutcome::Failed {
+            detail: detail.to_string(),
+        }
+    }
+
+    /// 指定プレフィックスで始まる最初の行を返す。
+    fn line_starting<'a>(md: &'a str, prefix: &str) -> &'a str {
+        md.lines()
+            .find(|l| l.starts_with(prefix))
+            .unwrap_or_else(|| panic!("line starting with {prefix:?} not found in:\n{md}"))
+    }
+
+    fn pipes(line: &str) -> usize {
+        line.matches('|').count()
+    }
+
+    fn with_mutation(mut e: Evaluation, caught: usize, total: usize) -> Evaluation {
+        e.mutation = passed(1);
+        e.mutation_caught = caught;
+        e.mutation_total = total;
+        e
+    }
+
+    // (1) Mutation 列
+
+    #[test]
+    fn md_summary_without_mutation_has_no_mutation_column() {
+        let md = render(&[eval("a", 50.0)]);
+        assert!(!md.contains("Mutation"));
+        let header = line_starting(&md, "| 順位");
+        assert!(header.ends_with("Wasm |"));
+        // 13 列 -> パイプ 14 本
+        assert_eq!(pipes(header), 14);
+    }
+
+    #[test]
+    fn md_summary_with_mutation_adds_column_to_header_separator_and_rows() {
+        let md = render(&[with_mutation(eval("a", 50.0), 3, 4), eval("b", 40.0)]);
+        let header = line_starting(&md, "| 順位");
+        let sep = line_starting(&md, "| ----");
+        let row_a = line_starting(&md, "| 1 ");
+        let row_b = line_starting(&md, "| 2 ");
+        assert!(header.ends_with("Mutation |"));
+        assert_eq!(pipes(header), 15);
+        assert_eq!(pipes(sep), 15);
+        assert_eq!(pipes(row_a), 15);
+        assert_eq!(pipes(row_b), 15);
+    }
+
+    #[test]
+    fn md_summary_mutation_column_shown_if_any_candidate_has_mutants() {
+        // 先頭は total==0 でも、2 件目が total>0 なら列が付き、先頭行は「—」になる。
+        let md = render(&[eval("a", 50.0), with_mutation(eval("b", 40.0), 1, 2)]);
+        assert!(line_starting(&md, "| 1 ").ends_with("| — |"));
+        assert!(line_starting(&md, "| 2 ").ends_with("| 1/2 (50%) |"));
+    }
+
+    #[test]
+    fn md_summary_row_shows_candidate_id_and_one_decimal_scores() {
+        let mut e = eval("cand-x", 87.65);
+        e.axes.correctness = 42.0;
+        let md = render(&[e]);
+        let row = line_starting(&md, "| 1 ");
+        assert!(row.contains("| cand-x | 87.7 | 42.0 |"), "{row}");
+    }
+
+    // (2) mutation_cell
+
+    #[test]
+    fn mutation_cell_skipped_is_dash_regardless_of_counts() {
+        assert_eq!(mutation_cell(3, 4, &StageOutcome::Skipped), "—");
+    }
+
+    #[test]
+    fn mutation_cell_failed_and_timed_out_are_failed() {
+        assert_eq!(mutation_cell(0, 0, &failed("x")), "❌ failed");
+        assert_eq!(
+            mutation_cell(1, 2, &StageOutcome::TimedOut { limit_ms: 10 }),
+            "❌ failed"
+        );
+    }
+
+    #[test]
+    fn mutation_cell_passed_with_zero_total_is_zero_mutants() {
+        assert_eq!(mutation_cell(0, 0, &passed(1)), "✅ 0 mutants");
+    }
+
+    #[test]
+    fn mutation_cell_passed_shows_caught_total_and_percentage() {
+        assert_eq!(mutation_cell(3, 4, &passed(1)), "3/4 (75%)");
+        assert_eq!(mutation_cell(0, 5, &passed(1)), "0/5 (0%)");
+        assert_eq!(mutation_cell(5, 5, &passed(1)), "5/5 (100%)");
+    }
+
+    #[test]
+    fn mutation_cell_percentage_is_rounded_to_integer() {
+        assert_eq!(mutation_cell(1, 3, &passed(1)), "1/3 (33%)");
+        assert_eq!(mutation_cell(2, 3, &passed(1)), "2/3 (67%)");
+    }
+
+    // (3) evals.len() > 1 の分岐
+
+    #[test]
+    fn md_single_candidate_has_no_details_or_comparison() {
+        let md = render(&[eval("a", 50.0)]);
+        assert!(md.contains("## 比較サマリー"));
+        assert!(!md.contains("## 候補詳細"));
+        assert!(!md.contains("## 候補間比較"));
+    }
+
+    #[test]
+    fn md_two_candidates_have_details_and_comparison() {
+        let md = render(&[eval("a", 50.0), eval("b", 40.0)]);
+        assert!(md.contains("## 候補詳細"));
+        assert!(md.contains("## 候補間比較"));
+        assert!(md.contains("### 🥇 1位: `a` — 50.0 点"));
+        assert!(md.contains("### 🥈 2位: `b` — 40.0 点"));
+    }
+
+    // (4) Failed detail の切り詰め
+
+    #[test]
+    fn md_failed_detail_is_truncated_to_first_8_lines() {
+        let detail = (1..=10)
+            .map(|i| format!("err-line-{i};"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut a = eval("a", 50.0);
+        a.compile = failed(&detail);
+        let md = render(&[a, eval("b", 40.0)]);
+        assert!(md.contains("**失敗詳細**"));
+        assert!(md.contains("<summary>コンパイル エラー</summary>"));
+        assert!(md.contains("err-line-8;"));
+        assert!(!md.contains("err-line-9;"));
+        assert!(!md.contains("err-line-10;"));
+    }
+
+    #[test]
+    fn md_failed_detail_of_exactly_8_lines_is_kept_whole() {
+        let detail = (1..=8)
+            .map(|i| format!("L{i};"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut a = eval("a", 50.0);
+        a.test = failed(&detail);
+        let md = render(&[a, eval("b", 40.0)]);
+        assert!(md.contains("L1;\nL2;\nL3;\nL4;\nL5;\nL6;\nL7;\nL8;\n```"));
+    }
+
+    #[test]
+    fn md_failure_section_header_appears_once_for_multiple_failures() {
+        let mut a = eval("a", 50.0);
+        a.compile = failed("c");
+        a.test = failed("t");
+        let md = render(&[a, eval("b", 40.0)]);
+        assert_eq!(md.matches("**失敗詳細**").count(), 1);
+        assert_eq!(md.matches("<details><summary>").count(), 2);
+    }
+
+    #[test]
+    fn md_no_failure_section_when_nothing_failed() {
+        let md = render(&[eval("a", 50.0), eval("b", 40.0)]);
+        assert!(!md.contains("**失敗詳細**"));
+    }
+
+    // (5) コンパイル時間の強調
+
+    #[test]
+    fn md_compile_time_only_fastest_is_highlighted() {
+        let mut a = eval("a", 50.0);
+        let mut b = eval("b", 40.0);
+        a.compile = passed(300);
+        b.compile = passed(100);
+        let md = render(&[a, b]);
+        assert_eq!(
+            line_starting(&md, "| コンパイル時間"),
+            "| コンパイル時間 | 300ms | **100ms** ⚡ |"
+        );
+    }
+
+    #[test]
+    fn md_compile_time_single_passed_is_not_highlighted() {
+        let mut a = eval("a", 50.0);
+        a.compile = passed(300);
+        let mut b = eval("b", 40.0);
+        b.compile = failed("x");
+        let md = render(&[a, b]);
+        assert_eq!(
+            line_starting(&md, "| コンパイル時間"),
+            "| コンパイル時間 | 300ms | — |"
+        );
+    }
+
+    /// 現状の挙動の固定（特性テスト）。同タイムは両方強調される。
+    #[test]
+    fn characterization_md_compile_time_tie_highlights_all_tied_current_behavior() {
+        let mut a = eval("a", 50.0);
+        let mut b = eval("b", 40.0);
+        a.compile = passed(100);
+        b.compile = passed(100);
+        let md = render(&[a, b]);
+        assert_eq!(
+            line_starting(&md, "| コンパイル時間"),
+            "| コンパイル時間 | **100ms** ⚡ | **100ms** ⚡ |"
+        );
+    }
+
+    #[test]
+    fn md_test_time_fastest_is_highlighted() {
+        let mut a = eval("a", 50.0);
+        let mut b = eval("b", 40.0);
+        a.test = passed(20);
+        b.test = passed(90);
+        let md = render(&[a, b]);
+        assert_eq!(
+            line_starting(&md, "| テスト時間"),
+            "| テスト時間 | **20ms** ⚡ | 90ms |"
+        );
+    }
+
+    // (6) Clippy 警告
+
+    #[test]
+    fn md_clippy_all_equal_warnings_not_highlighted() {
+        let mut a = eval("a", 50.0);
+        let mut b = eval("b", 40.0);
+        a.lint_warnings = 2;
+        b.lint_warnings = 2;
+        let md = render(&[a, b]);
+        assert_eq!(
+            line_starting(&md, "| Clippy警告"),
+            "| Clippy警告 | 2件 | 2件 |"
+        );
+    }
+
+    #[test]
+    fn md_clippy_fewest_warnings_highlighted_when_different() {
+        let mut a = eval("a", 50.0);
+        let mut b = eval("b", 40.0);
+        a.lint_warnings = 3;
+        b.lint_warnings = 1;
+        let md = render(&[a, b]);
+        assert_eq!(
+            line_starting(&md, "| Clippy警告"),
+            "| Clippy警告 | 3件 | **1件** ✅ |"
+        );
+    }
+
+    // (7) 軸スコア・総合スコア
+
+    #[test]
+    fn md_axis_max_is_bold_when_scores_differ() {
+        let mut a = eval("a", 50.0);
+        let mut b = eval("b", 40.0);
+        a.axes.correctness = 10.0;
+        b.axes.correctness = 30.0;
+        let md = render(&[a, b]);
+        assert_eq!(
+            line_starting(&md, "| 正誤スコア"),
+            "| 正誤スコア | 10.0 | **30.0** |"
+        );
+    }
+
+    #[test]
+    fn md_axis_all_equal_is_not_bold() {
+        // AxisScores::default() は全軸 0 -> 全員同点で強調なし。
+        let md = render(&[eval("a", 50.0), eval("b", 40.0)]);
+        assert_eq!(
+            line_starting(&md, "| 安全スコア"),
+            "| 安全スコア | 0.0 | 0.0 |"
+        );
+    }
+
+    #[test]
+    fn md_axis_tied_max_with_lower_third_highlights_both_tied() {
+        let mut a = eval("a", 50.0);
+        let mut b = eval("b", 40.0);
+        let c = eval("c", 30.0);
+        a.axes.security = 20.0;
+        b.axes.security = 20.0;
+        let md = render(&[a, b, c]);
+        assert_eq!(
+            line_starting(&md, "| 安全スコア"),
+            "| 安全スコア | **20.0** | **20.0** | 0.0 |"
+        );
+    }
+
+    #[test]
+    fn md_axis_rows_cover_four_axes_without_resource() {
+        let md = render(&[eval("a", 50.0), eval("b", 40.0)]);
+        for label in [
+            "| 正誤スコア",
+            "| 安全スコア",
+            "| 性能スコア",
+            "| 保守スコア",
+        ] {
+            line_starting(&md, label);
+        }
+        assert!(!md.contains("| 資源スコア"));
+    }
+
+    #[test]
+    fn md_total_score_max_gets_trophy() {
+        let md = render(&[eval("a", 80.0), eval("b", 40.0)]);
+        assert_eq!(
+            line_starting(&md, "| **総合スコア**"),
+            "| **総合スコア** | **80.0** 🏆 | 40.0 |"
+        );
+    }
+
+    #[test]
+    fn md_total_score_tie_gives_multiple_trophies() {
+        let md = render(&[eval("a", 80.0), eval("b", 80.0), eval("c", 10.0)]);
+        let line = line_starting(&md, "| **総合スコア**");
+        assert_eq!(
+            line,
+            "| **総合スコア** | **80.0** 🏆 | **80.0** 🏆 | 10.0 |"
+        );
+    }
+
+    /// 現状の挙動の固定（特性テスト）。軸スコアと違い、総合スコアは
+    /// 全員同点でも 🏆 が全員に付く（「差があるときのみ」の条件が無い）。
+    #[test]
+    fn characterization_md_total_score_all_equal_all_get_trophy_current_behavior() {
+        let md = render(&[eval("a", 50.0), eval("b", 50.0)]);
+        assert_eq!(
+            line_starting(&md, "| **総合スコア**"),
+            "| **総合スコア** | **50.0** 🏆 | **50.0** 🏆 |"
+        );
+    }
+
+    #[test]
+    fn md_comparison_header_and_separator_match_candidate_count() {
+        let md = render(&[eval("a", 3.0), eval("b", 2.0), eval("c", 1.0)]);
+        assert_eq!(line_starting(&md, "| 観点"), "| 観点 | a | b | c |");
+        let sep = md
+            .lines()
+            .find(|l| *l == "| ---- | ---- | ---- | ---- |")
+            .is_some();
+        assert!(sep);
+    }
+
+    // (8) 空 / 採用候補
+
+    #[test]
+    fn md_empty_evals_does_not_panic_and_has_no_best_line() {
+        let md = render(&[]);
+        assert!(md.contains("## 比較サマリー"));
+        assert!(!md.contains("採用候補"));
+        assert!(!md.contains("## 候補詳細"));
+        assert!(!md.contains("## 候補間比較"));
+    }
+
+    #[test]
+    fn md_best_candidate_line_uses_first_eval() {
+        let md = render(&[eval("top", 91.26), eval("second", 10.0)]);
+        assert!(md.contains("**採用候補**: `top`（91.3点）"));
+    }
+
+    // 詳細セクションの条件付き行
+
+    #[test]
+    fn md_details_mutation_and_wasm_lines_hidden_when_skipped() {
+        let md = render(&[eval("a", 50.0), eval("b", 40.0)]);
+        assert!(!md.contains("- Mutation:"));
+        assert!(!md.contains("- Wasm:"));
+    }
+
+    #[test]
+    fn md_details_show_wasm_with_fuel_and_mutation_when_present() {
+        let mut a = with_mutation(eval("a", 50.0), 1, 2);
+        a.wasm = passed(5);
+        a.wasm_fuel_used = Some(1234);
+        let md = render(&[a, eval("b", 40.0)]);
+        assert!(md.contains("- Mutation: 1/2 (50%)"));
+        assert!(md.contains("- Wasm: ✅ 5ms (fuel使用: 1234)"));
+    }
+
+    #[test]
+    fn md_details_axis_table_shows_rate_against_rubric_limit() {
+        let mut a = eval("a", 50.0);
+        a.axes.correctness = 25.0;
+        let md = render(&[a, eval("b", 40.0)]);
+        assert!(md.contains("| correctness | 25.0 | 50 | 50% |"));
+        assert!(md.contains("| resource_usage | 0.0 | 5 | 0% |"));
+    }
 }
