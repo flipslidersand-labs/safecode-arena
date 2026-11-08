@@ -264,6 +264,43 @@ fn python_inline_test_failure_detected() {
 }
 
 #[test]
+fn rust_exit_zero_in_test_is_detected_as_failed() {
+    // テスト中に exit(0) で打ち切ると cargo test は終了コード 0 だが結果行が出ない (#226)。
+    let cand = write_candidate(
+        "exit0",
+        "pub fn f() -> i32 { std::process::exit(0) }\n\
+         #[cfg(test)]\nmod t {\n    #[test]\n    fn a() { super::f(); }\n}\n",
+    );
+
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(cand.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("❌ failed"))
+        .stdout(predicate::str::contains("85.0").not());
+}
+
+#[test]
+fn python_os_exit_zero_in_candidate_is_detected_as_failed() {
+    // os._exit(0) で pytest を打ち切っても終了コード 0 になるが、結果行が無いので失敗扱い (#226)。
+    let cand = write_py(
+        "exit0",
+        "import os\n\ndef add(a, b):\n    return a + b\n\ndef test_x():\n    os._exit(0)\n",
+    );
+
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(cand.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("❌ failed"))
+        .stdout(predicate::str::contains("85.0").not());
+}
+
+#[test]
 #[ignore = "wasm32-wasip1 ターゲットが必要。CI は ignored-tests.yml が --ignored で実行する (#108)"]
 fn wasm_entry_runs_sandbox_and_awards_resource_usage() {
     // wasm32-wasip1 にビルドして隔離実行できる候補。
@@ -352,6 +389,33 @@ fn go_clean_candidate_scores() {
         .success()
         .stdout(predicate::str::contains("85.0"))
         .stdout(predicate::str::contains("✅"));
+}
+
+#[test]
+fn go_forged_no_tests_marker_with_exit_zero_is_failed() {
+    // init が "[no tests to run]" 相当を出して exit(0) しても、Test 関数があれば合格しない (#226)。
+    let cand = write_go(
+        "forged",
+        "package candidate\n\nimport (\n\t\"fmt\"\n\t\"os\"\n)\n\n\
+         func init() {\n\tfmt.Println(\"testing: warning: no tests to run\")\n\tos.Exit(0)\n}\n\n\
+         func Add(a, b int) int {\n\treturn a + b\n}\n",
+    );
+    let tests_dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tests_dir.path().join("c_test.go"),
+        "package candidate\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {\n\tt.Fatal(\"x\")\n}\n",
+    )
+    .unwrap();
+
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(cand.path())
+        .args(["--tests", tests_dir.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("❌ failed"))
+        .stdout(predicate::str::contains("85.0").not());
 }
 
 #[test]
@@ -683,4 +747,82 @@ mod tests {
     // 候補のテストが実際に走り、キーが見えなかったことを示す。
     assert!(all.contains("ENVPROBE_RESULT=ENVPROBE_UNSET"), "{all}");
     assert!(!all.contains("dummy-secret-for-test"), "{all}");
+}
+
+// --- lint 抑止コメントの回帰テスト (#237) ---
+// 候補が先頭で lint を抑止しても警告件数が 0 に化けないこと。
+
+#[test]
+fn rust_inner_allow_attribute_does_not_hide_clippy_warnings() {
+    // rustc の unused_variables / nonstandard_style / deprecated と clippy の len_zero を含む。
+    // 抑止属性を付けても 0 warn に化けない(clippy 側は `v.len() == 0` のみ)。
+    // 5 = bad_name + deprecated 利用 + 未使用変数 + len_zero + cargo のまとめ行(既存の数え方。別 Issue 予定)。
+    let cand = write_candidate(
+        "sup",
+        "#![allow(clippy::all, warnings)]\n\
+         pub struct bad_name;\n\
+         #[deprecated]\n\
+         pub fn old() {}\n\
+         pub fn use_old() { old() }\n\
+         pub fn no_items(v: &[i32]) -> bool { v.len() == 0 }\n\
+         pub fn add(a: i32, b: i32) -> i32 { let x = 1; a + b }\n",
+    );
+
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(cand.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("5 warn"));
+}
+
+#[test]
+#[ignore = "pytest/ruff が必要。CI は ignored-tests.yml が --ignored で実行する (#108)"]
+fn python_noqa_file_directive_does_not_hide_ruff_findings() {
+    // `import os` は未使用 import (F401) 1 件。`# ruff: noqa` を付けても 0 warn に化けない。
+    let cand = write_py(
+        "sup",
+        "# ruff: noqa\nimport os\n\n\ndef add(a, b):\n    return a + b\n",
+    );
+
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(cand.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::is_match(r"\b[1-9][0-9]* warn").unwrap());
+}
+
+#[test]
+#[ignore = "eslint(v9+) と node が必要。実行環境依存のため ignored (#237)"]
+fn js_eslint_disable_comment_does_not_hide_findings() {
+    // CI(ignored-tests.yml)には eslint が無い。パイプラインと同じ解決(PATH 上の `eslint`)で
+    // 実行できなければ、skipped 表示を誤検知せず明示してスキップする。
+    let eslint_ok = std::process::Command::new("eslint")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !eslint_ok {
+        eprintln!("eslint 未導入のためスキップ: js_eslint_disable_comment_does_not_hide_findings");
+        return;
+    }
+    let mut f = tempfile::Builder::new()
+        .prefix("sup")
+        .suffix(".js")
+        .tempfile()
+        .unwrap();
+    f.write_all(b"/* eslint-disable */\nconst unused = 1;\nmodule.exports = {};\n")
+        .unwrap();
+    f.flush().unwrap();
+
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(f.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::is_match(r"\b[1-9][0-9]* warn").unwrap());
 }
