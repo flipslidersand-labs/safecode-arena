@@ -30,6 +30,15 @@ const MAX_OUTPUT_FILE_BYTES: u64 = 64 * 1024 * 1024;
 /// 出力ファイルのサイズを確認する間隔。
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
+/// `reader` から最大 `max_bytes` バイトだけ読む。
+///
+/// fstat 後にファイルが伸びても(孫プロセスが書き続けても)読み込み量が上限を超えない。
+fn read_capped<R: Read>(reader: &mut R, max_bytes: usize) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let _ = reader.take(max_bytes as u64).read_to_end(&mut buf);
+    buf
+}
+
 /// キャプチャ先ファイルを上限付きで読み取る。
 ///
 /// 上限を超える場合は先頭と末尾を残し、間に切り詰めの印を入れる。
@@ -38,9 +47,7 @@ fn read_bounded(mut file: std::fs::File, max_bytes: usize) -> String {
     let len = file.metadata().map(|m| m.len()).unwrap_or(0);
     let _ = file.seek(SeekFrom::Start(0));
     if len <= max_bytes as u64 {
-        let mut buf = Vec::new();
-        let _ = file.read_to_end(&mut buf);
-        return String::from_utf8_lossy(&buf).into_owned();
+        return String::from_utf8_lossy(&read_capped(&mut file, max_bytes)).into_owned();
     }
     let half = max_bytes / 2;
     let mut head = vec![0u8; half];
@@ -487,13 +494,25 @@ mod tests {
     }
 
     #[test]
-    fn truncation_does_not_split_utf8() {
+    fn read_capped_stops_at_limit_even_if_source_grows() {
+        // fstat 後に伸びたファイルを模して、上限より大きい入力を渡す。
+        let mut src = std::io::repeat(b'a').take(10 * 1024 * 1024);
+        let buf = read_capped(&mut src, 1024);
+        assert_eq!(buf.len(), 1024);
+    }
+
+    #[test]
+    fn truncation_replaces_only_cut_chars_with_replacement_char() {
         let mut f = tempfile::tempfile().unwrap();
         std::io::Write::write_all(&mut f, "あ".repeat(1000).as_bytes()).unwrap();
-        // 3 バイト文字の途中で切れる上限(奇数)でも panic せず、印が付く。
-        let s = read_bounded(f, 101);
-        assert!(s.contains("切り詰め"));
-        assert!(s.starts_with('あ') && s.ends_with('あ') || s.contains('\u{FFFD}'));
+        // 上限 98 → 先頭 49 バイト(16 文字 + 1 バイト)・末尾 49 バイト(1 バイト + 16 文字)。
+        let s = read_bounded(f, 98);
+        let lines: Vec<&str> = s.lines().collect();
+        assert_eq!(lines.len(), 3, "{s}");
+        assert!(lines[1].contains("切り詰め"), "{s}");
+        assert_eq!(lines[0], format!("{}\u{FFFD}", "あ".repeat(16)));
+        assert_eq!(lines[2], format!("\u{FFFD}{}", "あ".repeat(16)));
+        assert_eq!(s.matches('\u{FFFD}').count(), 2);
     }
 
     #[test]
