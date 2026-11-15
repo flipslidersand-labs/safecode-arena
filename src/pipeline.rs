@@ -1386,6 +1386,7 @@ fn parse_criterion_ns(output: &str) -> Option<u64> {
 
 fn to_ns(val: f64, unit: &str) -> Option<f64> {
     match unit {
+        "ps" => Some(val * 0.001),
         "ns" => Some(val),
         "µs" | "us" => Some(val * 1_000.0),
         "ms" => Some(val * 1_000_000.0),
@@ -1452,12 +1453,24 @@ mod bench_tests {
     #[test]
     fn parse_criterion_ns_unknown_unit_is_skipped() {
         assert_eq!(
-            parse_criterion_ns("b  time:   [1.0 ps 2.0 ps 3.0 ps]"),
+            parse_criterion_ns("b  time:   [1.0 fs 2.0 fs 3.0 fs]"),
             None
         );
         // 未知単位の行は無視し、有効な行だけで最小を決める
-        let output = "x  time:   [1.0 ps 2.0 ps 3.0 ps]\ny  time:   [1.0 ns 7.0 ns 9.0 ns]";
+        let output = "x  time:   [1.0 fs 2.0 fs 3.0 fs]\ny  time:   [1.0 ns 7.0 ns 9.0 ns]";
         assert_eq!(parse_criterion_ns(output), Some(7));
+    }
+
+    #[test]
+    fn parse_criterion_ns_converts_ps_to_ns() {
+        // Criterion は 1ns 未満を ps で出す（1ps = 0.001ns）
+        assert!((to_ns(700.0, "ps").unwrap() - 0.7).abs() < 1e-9);
+        assert_eq!(
+            parse_criterion_ns("b  time:   [600.0 ps 700.0 ps 800.0 ps]"),
+            Some(1)
+        );
+        let output = "x  time:   [1.0 ns 7.0 ns 9.0 ns]\ny  time:   [400.0 ps 450.0 ps 500.0 ps]";
+        assert_eq!(parse_criterion_ns(output), Some(0));
     }
 
     #[test]
@@ -1486,7 +1499,7 @@ mod bench_tests {
             parse_criterion_ns("b  time:   [1.0 ns 5.0 ms]"),
             Some(5_000_000)
         );
-        assert_eq!(parse_criterion_ns("b  time:   [1.0 ns 5.0 ps]"), None);
+        assert_eq!(parse_criterion_ns("b  time:   [1.0 ns 5.0 fs]"), None);
     }
 
     #[test]
