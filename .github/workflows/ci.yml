@@ -8,7 +8,7 @@ on:
 
 jobs:
   quality:
-    uses: flipslidersand-labs/qa-workflows/.github/workflows/rust-test.yml@f5562c18cac2b37d43d96b642e2d6a337539a0c0 # main
+    uses: flipslidersand-labs/qa-workflows/.github/workflows/rust-test.yml@34384feecce632d840d47eaf7216185f6dabbb0d # main
     with:
       # examples/ に main なしのため --lib --tests のみ対象
       test-args: "--lib --tests"
