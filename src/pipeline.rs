@@ -146,6 +146,32 @@ fn copy_ext(src_dir: &Path, dest: &Path, ext: &str) -> Result<()> {
     Ok(())
 }
 
+/// `copy_ext` と同様だが、`dest` に同名ファイルが既にあればエラーにする。
+/// 候補ソースを先に書き込む経路で、テストファイルが候補を上書きするのを防ぐ。
+fn copy_ext_no_clobber(src_dir: &Path, dest: &Path, ext: &str) -> Result<()> {
+    fs::create_dir_all(dest).context("コピー先ディレクトリの作成に失敗")?;
+    for entry in fs::read_dir(src_dir)
+        .with_context(|| format!("テストディレクトリの読込に失敗: {}", src_dir.display()))?
+    {
+        let path = entry?.path();
+        if path.extension().and_then(|e| e.to_str()) != Some(ext) {
+            continue;
+        }
+        let name = path.file_name().unwrap();
+        let target = dest.join(name);
+        if target.exists() {
+            anyhow::bail!(
+                "テストファイル名が候補ファイルと衝突: {} ({} は候補が使用済み。リネームしてください)",
+                path.display(),
+                name.to_string_lossy()
+            );
+        }
+        fs::copy(&path, &target)
+            .with_context(|| format!("テストのコピーに失敗: {}", path.display()))?;
+    }
+    Ok(())
+}
+
 /// `copy_ext` と同様だが、`dest` に同名ファイルが既にあれば上書きせず
 /// `prefix` 付きの名前でコピーする。それも存在すればエラー(黙って上書きしない)。
 /// Rust の integration test は 1 ファイル 1 クレートなのでリネームしても安全。
@@ -661,7 +687,7 @@ fn run_python_stages(
 ) -> Result<StageResults> {
     fs::write(root.join("candidate.py"), &candidate.source).context("候補ソースの書込に失敗")?;
     if let Some(dir) = tests_dir {
-        copy_ext(dir, root, "py")?;
+        copy_ext_no_clobber(dir, root, "py")?;
     }
 
     // compile: 構文チェック
@@ -853,7 +879,7 @@ fn run_go_stages(
     fs::write(root.join("go.mod"), go_mod).context("go.mod の書込に失敗")?;
     fs::write(root.join("candidate.go"), &candidate.source).context("候補ソースの書込に失敗")?;
     if let Some(dir) = tests_dir {
-        copy_ext(dir, root, "go")?;
+        copy_ext_no_clobber(dir, root, "go")?;
     }
 
     // compile: go build
@@ -1057,7 +1083,7 @@ fn run_js_stages(
 ) -> Result<StageResults> {
     fs::write(root.join("candidate.js"), &candidate.source).context("候補ソースの書込に失敗")?;
     if let Some(dir) = tests_dir {
-        copy_ext(dir, root, "js")?;
+        copy_ext_no_clobber(dir, root, "js")?;
     }
 
     // compile: 構文チェック
@@ -1129,7 +1155,7 @@ fn run_ts_stages(
     fs::write(root.join("tsconfig.json"), tsconfig).context("tsconfig.json の書込に失敗")?;
     fs::write(root.join("candidate.ts"), &candidate.source).context("候補ソースの書込に失敗")?;
     if let Some(dir) = tests_dir {
-        copy_ext(dir, root, "ts")?;
+        copy_ext_no_clobber(dir, root, "ts")?;
     }
 
     if !tsc_available() {
@@ -1931,6 +1957,51 @@ mod copy_assemble_tests {
             fs::read_to_string(dest.join("prop_props.rs")).unwrap(),
             "user2"
         );
+    }
+
+    /// テストディレクトリに候補ファイルと同名のファイルがあっても候補を上書きさせない。
+    fn assert_collision_is_error(
+        name: &str,
+        run: fn(&Path, &Candidate, Duration, Option<&Path>) -> Result<StageResults>,
+    ) {
+        let d = tempfile::tempdir().unwrap();
+        let tests = d.path().join("tests");
+        write(&tests, name, "EVIL");
+        let root = d.path().join("root");
+        fs::create_dir_all(&root).unwrap();
+        let res = run(
+            &root,
+            &cand("CANDIDATE"),
+            Duration::from_secs(5),
+            Some(&tests),
+        );
+        let err = format!("{:#}", res.err().expect("衝突はエラーになるべき"));
+        assert!(err.contains(name), "{err}");
+        assert_eq!(fs::read_to_string(root.join(name)).unwrap(), "CANDIDATE");
+    }
+
+    #[test]
+    fn python_tests_dir_candidate_name_collision_is_error() {
+        assert_collision_is_error("candidate.py", |r, c, t, d| {
+            run_python_stages(r, c, t, d, false)
+        });
+    }
+
+    #[test]
+    fn go_tests_dir_candidate_name_collision_is_error() {
+        assert_collision_is_error("candidate.go", |r, c, t, d| {
+            run_go_stages(r, c, t, d, false)
+        });
+    }
+
+    #[test]
+    fn js_tests_dir_candidate_name_collision_is_error() {
+        assert_collision_is_error("candidate.js", run_js_stages);
+    }
+
+    #[test]
+    fn ts_tests_dir_candidate_name_collision_is_error() {
+        assert_collision_is_error("candidate.ts", run_ts_stages);
     }
 
     #[test]
