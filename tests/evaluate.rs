@@ -830,3 +830,36 @@ fn js_eslint_disable_comment_does_not_hide_findings() {
         .success()
         .stdout(predicate::str::is_match(r"\b[1-9][0-9]* warn").unwrap());
 }
+
+#[test]
+fn db_skips_comparison_when_prop_tests_condition_differs() {
+    let work = tempfile::tempdir().unwrap();
+    let db = work.path().join("history.db");
+    let subject = work.path().join("subject.rs");
+    let prop_dir = work.path().join("props");
+    std::fs::create_dir(&prop_dir).unwrap();
+    std::fs::write(&subject, "pub fn add(a: i32, b: i32) -> i32 { a + b }\n").unwrap();
+
+    // run #1: --prop-tests なし
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(&subject)
+        .args(["--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("run #1 を保存"));
+
+    // run #2: --prop-tests あり（条件違い）→ 比較スキップ、#1 を基準にしない
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(&subject)
+        .args(["--prop-tests", prop_dir.to_str().unwrap()])
+        .args(["--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("比較をスキップ"))
+        .stderr(predicate::str::contains("prop_tests=true"))
+        .stderr(predicate::str::contains("リグレッションなし").not());
+}
