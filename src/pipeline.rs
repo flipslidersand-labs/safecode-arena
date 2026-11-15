@@ -562,8 +562,8 @@ fn run_rust_stages(
 
     let mut c = Command::new("cargo");
     c.args(clippy_args()).current_dir(root);
-    let (lint, lint_stderr) = runner::run_stage_capture("clippy", c, timeout);
-    let lint_warnings = count_lint_warnings(&lint_stderr);
+    let (lint, lint_stderr, truncated) = runner::run_stage_capture_flagged("clippy", c, timeout);
+    let lint_warnings = floor_if_truncated(count_lint_warnings(&lint_stderr), truncated);
 
     let prop_test = if let Some(prop_dir) = prop_tests_dir {
         copy_ext_keep_existing(prop_dir, &root.join("tests"), "rs", "prop_")?;
@@ -715,11 +715,14 @@ fn run_python_stages(
         l.arg("-c")
             .arg("ruff check --ignore-noqa --output-format=concise candidate.py 1>&2; true")
             .current_dir(root);
-        let (outcome, out) = runner::run_stage_capture("ruff", l, timeout);
+        let (outcome, out, truncated) = runner::run_stage_capture_flagged("ruff", l, timeout);
         if ruff_run_failed(&out) {
             (StageOutcome::Skipped, 0)
         } else {
-            (outcome, count_ruff_findings(&out))
+            (
+                outcome,
+                floor_if_truncated(count_ruff_findings(&out), truncated),
+            )
         }
     } else {
         (StageOutcome::Skipped, 0)
@@ -902,20 +905,27 @@ fn run_go_stages(
         l.arg("-c")
             .arg("staticcheck ./... 2>&1; true")
             .current_dir(root);
-        let (outcome, out) = runner::run_stage_capture("staticcheck", l, timeout);
+        let (outcome, out, truncated) =
+            runner::run_stage_capture_flagged("staticcheck", l, timeout);
         if go_lint_run_failed(&out) {
             (StageOutcome::Skipped, 0)
         } else {
-            (outcome, count_staticcheck_findings(&out))
+            (
+                outcome,
+                floor_if_truncated(count_staticcheck_findings(&out), truncated),
+            )
         }
     } else {
         let mut l = Command::new("sh");
         l.arg("-c").arg("go vet ./... 1>&2; true").current_dir(root);
-        let (outcome, out) = runner::run_stage_capture("go-vet", l, timeout);
+        let (outcome, out, truncated) = runner::run_stage_capture_flagged("go-vet", l, timeout);
         if go_lint_run_failed(&out) {
             (StageOutcome::Skipped, 0)
         } else {
-            (outcome, count_go_vet_findings(&out))
+            (
+                outcome,
+                floor_if_truncated(count_go_vet_findings(&out), truncated),
+            )
         }
     };
 
@@ -1110,12 +1120,15 @@ fn run_js_stages(
         l.arg("-c")
             .arg(eslint_cmd("candidate.js"))
             .current_dir(root);
-        let (outcome, out) = runner::run_stage_capture("eslint", l, timeout);
+        let (outcome, out, truncated) = runner::run_stage_capture_flagged("eslint", l, timeout);
         if eslint_run_failed(&out) {
             // 実行失敗を「指摘 0 件」にしない (#152)
             (StageOutcome::Skipped, 0)
         } else {
-            (outcome, count_eslint_findings(&out))
+            (
+                outcome,
+                floor_if_truncated(count_eslint_findings(&out), truncated),
+            )
         }
     } else {
         (StageOutcome::Skipped, 0)
@@ -1199,12 +1212,15 @@ fn run_ts_stages(
         l.arg("-c")
             .arg(eslint_cmd("candidate.ts"))
             .current_dir(root);
-        let (outcome, out) = runner::run_stage_capture("eslint", l, timeout);
+        let (outcome, out, truncated) = runner::run_stage_capture_flagged("eslint", l, timeout);
         if eslint_run_failed(&out) {
             // 実行失敗を「指摘 0 件」にしない (#152)
             (StageOutcome::Skipped, 0)
         } else {
-            (outcome, count_eslint_findings(&out))
+            (
+                outcome,
+                floor_if_truncated(count_eslint_findings(&out), truncated),
+            )
         }
     } else {
         (StageOutcome::Skipped, 0)
@@ -1282,6 +1298,21 @@ fn run_bench_stage(root: &Path, timeout: Duration) -> Option<u64> {
     let _ = std::fs::remove_dir_all(root.join("target/criterion"));
     let (_outcome, output) = runner::run_stage_capture("bench", bench_command(root), timeout);
     bench_ns_after_run(root, &output)
+}
+
+/// 出力が取り込み上限で切り詰められた場合の lint 件数の下限。
+///
+/// 切り詰め後の出力で数えると過少になり、大量の警告を出すほど得をしてしまう。
+/// 警告過多とみなし、security / maintainability の係数が 0 になる値へ引き上げる。
+const TRUNCATED_LINT_FLOOR: usize = 1000;
+
+/// 切り詰めが発生していれば件数を `TRUNCATED_LINT_FLOOR` 以上にする。
+fn floor_if_truncated(count: usize, truncated: bool) -> usize {
+    if truncated {
+        count.max(TRUNCATED_LINT_FLOOR)
+    } else {
+        count
+    }
 }
 
 /// `cargo bench` のコマンドを組み立てる。出力先を `root/target` に固定し、
@@ -2448,5 +2479,19 @@ mod bench_estimates_tests {
             .find(|(k, _)| *k == "CARGO_TARGET_DIR")
             .and_then(|(_, v)| v.map(|v| v.to_os_string()));
         assert_eq!(v, Some(d.path().join("target").into_os_string()));
+    }
+}
+
+#[cfg(test)]
+mod truncated_lint_tests {
+    use super::*;
+
+    #[test]
+    fn truncated_output_floors_lint_count_to_zero_score() {
+        assert_eq!(floor_if_truncated(3, false), 3);
+        assert_eq!(floor_if_truncated(3, true), TRUNCATED_LINT_FLOOR);
+        assert_eq!(floor_if_truncated(5000, true), 5000);
+        // 床値で security / maintainability の係数が 0 になる。
+        assert!(TRUNCATED_LINT_FLOOR >= 30);
     }
 }
