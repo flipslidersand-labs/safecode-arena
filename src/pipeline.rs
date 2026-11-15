@@ -2491,7 +2491,8 @@ mod truncated_lint_tests {
         assert_eq!(floor_if_truncated(3, false), 3);
         assert_eq!(floor_if_truncated(3, true), TRUNCATED_LINT_FLOOR);
         assert_eq!(floor_if_truncated(5000, true), 5000);
-        // 床値で security / maintainability の係数が 0 になる。
-        assert!(TRUNCATED_LINT_FLOOR >= 30);
+        // 床値で security / maintainability の係数が 0 になる(scoring.rs の閾値 30 件以上)。
+        let floored = floor_if_truncated(0, true);
+        assert!(floored >= 30, "床値が採点の閾値未満: {floored}");
     }
 }
