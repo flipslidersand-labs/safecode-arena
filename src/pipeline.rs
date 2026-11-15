@@ -58,6 +58,7 @@ path = "src/lib.rs"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+proptest = "1"
 
 [[bench]]
 name = "bench"
@@ -487,20 +488,26 @@ const RUSTC_FORCE_WARN_LINTS: &[&str] = &[
 
 /// `cargo clippy` の引数。`--force-warn` は候補先頭の `#![allow(...)]` でも警告を出させる (#237)。
 /// CARGO_TERM_COLOR=always(CI 既定)だと警告行に ANSI が付き件数を数えられないため色を切る。
-fn clippy_args() -> Vec<&'static str> {
-    let mut args = vec![
-        "clippy",
-        "--color",
-        "never",
-        "--",
-        "--force-warn",
-        "clippy::all",
-    ];
+fn clippy_args(is_bench: bool) -> Vec<&'static str> {
+    let mut args = vec!["clippy"];
+    if is_bench {
+        args.push("--benches");
+    }
+    args.extend(["--color", "never", "--", "--force-warn", "clippy::all"]);
     for lint in RUSTC_FORCE_WARN_LINTS {
         args.push("--force-warn");
         args.push(lint);
     }
     args
+}
+
+/// Rust 候補の test ステージで使う `cargo` 引数。ベンチ候補は `--benches` を付ける (#231)。
+fn rust_test_args(is_bench: bool) -> &'static [&'static str] {
+    if is_bench {
+        &["test", "--color", "never", "--benches"]
+    } else {
+        &["test", "--color", "never"]
+    }
 }
 
 /// Rust 候補の compile ステージで使う `cargo` 引数。
@@ -557,11 +564,11 @@ fn run_rust_stages(
     }
 
     let mut t = Command::new("cargo");
-    t.args(["test", "--color", "never"]).current_dir(root);
+    t.args(rust_test_args(is_bench)).current_dir(root);
     let test = run_test_stage("test", Language::Rust, t, timeout, false);
 
     let mut c = Command::new("cargo");
-    c.args(clippy_args()).current_dir(root);
+    c.args(clippy_args(is_bench)).current_dir(root);
     let (lint, lint_stderr, truncated) = runner::run_stage_capture_flagged("clippy", c, timeout);
     let lint_warnings = floor_if_truncated(count_lint_warnings(&lint_stderr), truncated);
 
@@ -1550,6 +1557,26 @@ criterion_main!(benches);"#;
         // 通常の lib 候補のコマンドは変えない。
         assert_eq!(rust_build_args(false), ["build"]);
     }
+
+    /// 回帰 (#231): test / clippy もベンチ候補では `--benches` を付ける。
+    #[test]
+    fn test_and_clippy_args_include_benches_only_for_bench_candidates() {
+        assert_eq!(
+            rust_test_args(true),
+            ["test", "--color", "never", "--benches"]
+        );
+        assert_eq!(rust_test_args(false), ["test", "--color", "never"]);
+        let b = clippy_args(true);
+        assert_eq!(&b[..4], ["clippy", "--benches", "--color", "never"]);
+        assert!(!clippy_args(false).contains(&"--benches"));
+    }
+
+    /// 回帰 (#231): Criterion 用 Cargo.toml にも proptest が入る(--prop-tests 併用でコンパイルできる)。
+    #[test]
+    fn criterion_cargo_toml_includes_proptest() {
+        assert!(CARGO_TOML_WITH_CRITERION.contains("proptest"));
+        assert!(CARGO_TOML_WITH_CRITERION.contains("criterion"));
+    }
 }
 
 #[cfg(test)]
@@ -2291,7 +2318,7 @@ mod clippy_args_tests {
     #[test]
     fn clippy_args_force_warn_clippy_and_rustc_lints() {
         // `-W` は候補の `#![allow]` に負けるため `--force-warn` を使う (#237)
-        let a = clippy_args();
+        let a = clippy_args(false);
         assert!(!a.contains(&"-W"));
         for lint in [
             "clippy::all",
