@@ -1571,9 +1571,10 @@ criterion_main!(benches);"#;
         assert!(!clippy_args(false).contains(&"--benches"));
     }
 
-    /// 回帰 (#231): Criterion 用 Cargo.toml にも proptest が入る(--prop-tests 併用でコンパイルできる)。
+    /// 回帰 (#231): Criterion 用 Cargo.toml にも proptest を dev-dependency として含める。
+    /// (含めるだけ。prop_test ステージ自体はベンチ候補向けに変えていない。)
     #[test]
-    fn criterion_cargo_toml_includes_proptest() {
+    fn criterion_cargo_toml_declares_proptest_dev_dependency() {
         assert!(CARGO_TOML_WITH_CRITERION.contains("proptest"));
         assert!(CARGO_TOML_WITH_CRITERION.contains("criterion"));
     }

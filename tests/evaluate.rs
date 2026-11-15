@@ -90,6 +90,33 @@ fn evaluate_broken_criterion_bench_candidate_fails_compile() {
 }
 
 #[test]
+#[ignore = "criterion の取得・ビルドが必要。CI は ignored-tests.yml が --ignored で実行する (#231)"]
+fn evaluate_criterion_bench_candidate_reports_clippy_warnings() {
+    // 空 lib.rs だけを clippy にかけて警告 0 件になっていた回帰を防ぐ (#231)。
+    let cand = write_candidate(
+        "lint_bench",
+        "use criterion::{criterion_group, criterion_main, Criterion};\n\
+         fn f() -> i32 { return 1; }\n\
+         fn b(c: &mut Criterion) { c.bench_function(\"x\", |b| b.iter(|| f())); }\n\
+         criterion_group!(benches, b);\n\
+         criterion_main!(benches);\n",
+    );
+
+    let out = Command::cargo_bin("safecode")
+        .unwrap()
+        .args(["evaluate", "--format", "json"])
+        .arg(cand.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let w = v[0]["lint_warnings"].as_u64().unwrap();
+    assert!(w >= 1, "lint_warnings: {}", v[0]["lint_warnings"]);
+}
+
+#[test]
 fn evaluate_without_candidates_fails() {
     Command::cargo_bin("safecode")
         .unwrap()
