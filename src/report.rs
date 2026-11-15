@@ -114,7 +114,7 @@ fn render_summary_table(out: &mut String, evals: &[Evaluation]) {
             "| {} {} | {} | {:.1} | {:.1} | {:.1} | {:.1} | {:.1} | {:.1} | {} | {} | {} | {} | {} |{}\n",
             i + 1,
             medal(i),
-            e.candidate_id,
+            table_cell(&e.candidate_id),
             e.score,
             e.axes.correctness,
             e.axes.security,
@@ -242,9 +242,28 @@ pub(crate) fn fence_for(content: &str) -> String {
     "`".repeat((longest + 1).max(3))
 }
 
+/// 改行・制御文字(Unicode の行区切りを含む)を空白 1 つに置き換える。
+fn flatten_controls(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_control() || c == '\u{2028}' || c == '\u{2029}' {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// Markdown 表のセル用。制御文字を空白にし、`|` をエスケープする。
+fn table_cell(s: &str) -> String {
+    flatten_controls(s).replace('|', "\\|")
+}
+
 /// `content` をインラインコードとして包む。区切りは内容中の最長バッククォート連続より長くし、
 /// 内容が先頭/末尾にバッククォートを持つ場合(空白のみでない場合)は前後に空白 1 つを付ける。
 fn inline_code(content: &str) -> String {
+    let content = &flatten_controls(content);
     let mut longest = 0usize;
     let mut run = 0usize;
     for c in content.chars() {
@@ -269,7 +288,7 @@ fn inline_code(content: &str) -> String {
 fn render_comparison(out: &mut String, evals: &[Evaluation]) {
     out.push_str("---\n\n## 候補間比較\n\n");
 
-    let ids: Vec<&str> = evals.iter().map(|e| e.candidate_id.as_str()).collect();
+    let ids: Vec<String> = evals.iter().map(|e| table_cell(&e.candidate_id)).collect();
     out.push_str("| 観点 |");
     for id in &ids {
         out.push_str(&format!(" {id} |"));
@@ -808,6 +827,25 @@ mod tests {
         let close = lines.iter().rposition(|l| *l == fence).unwrap();
         assert!(lines[open + 1..close].contains(&"# injected heading"));
         assert!(lines[close + 1..].iter().all(|l| l.trim().is_empty()));
+    }
+
+    #[test]
+    fn md_hostile_candidate_id_keeps_table_shape_and_heading() {
+        let hostile = "a|b\n# h\r\n| x |";
+        let base = render(&[eval("a", 50.0), eval("zz", 40.0)]);
+        let md = render(&[eval(hostile, 50.0), eval("zz", 40.0)]);
+        let table_lines = |s: &str| -> Vec<usize> {
+            s.lines()
+                .filter(|l| l.starts_with('|'))
+                .map(|l| l.replace("\\|", "").matches('|').count())
+                .collect()
+        };
+        assert_eq!(table_lines(&md), table_lines(&base));
+        assert_eq!(md.lines().count(), base.lines().count());
+        assert!(!md.lines().any(|l| l.starts_with("# h")));
+        assert!(md
+            .lines()
+            .any(|l| l.starts_with("### ") && l.contains("# h")));
     }
 
     #[test]
