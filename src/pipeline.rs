@@ -1377,7 +1377,8 @@ fn read_criterion_estimates_ns(root: &Path) -> Option<u64> {
     }
     let mut min = None;
     walk(&root.join("target/criterion"), 0, &mut min);
-    min.map(|v| v.round() as u64)
+    // 0.5ns 未満が 0 に丸められると scoring で最速=0 扱いになり比率が歪むため、下限を 1ns にする (#285)
+    min.map(|v| (v.round() as u64).max(1))
 }
 
 /// estimates.json の `median.point_estimate` (ns) を取り出す純関数。
@@ -2461,6 +2462,20 @@ mod bench_estimates_tests {
         write_est(d.path(), "grp/b", &est("20.4"));
         write_est(d.path(), "c", "{broken");
         assert_eq!(read_criterion_estimates_ns(d.path()), Some(20));
+    }
+
+    /// 回帰 (#285): 0.5ns 未満の median が 0ns に丸められて performance の比率が歪まない。
+    #[test]
+    fn read_estimates_sub_ns_is_not_rounded_to_zero() {
+        let d = tempfile::tempdir().unwrap();
+        write_est(d.path(), "fast", &est("0.3"));
+        assert_eq!(read_criterion_estimates_ns(d.path()), Some(1));
+        let d2 = tempfile::tempdir().unwrap();
+        write_est(d2.path(), "slow", &est("2.0"));
+        let fast = read_criterion_estimates_ns(d.path()).unwrap();
+        let slow = read_criterion_estimates_ns(d2.path()).unwrap();
+        assert!(fast > 0, "0ns になってはいけない");
+        assert_eq!(fast as f64 / slow as f64, 0.5);
     }
 
     #[test]
