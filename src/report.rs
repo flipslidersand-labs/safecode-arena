@@ -255,9 +255,11 @@ fn flatten_controls(s: &str) -> String {
         .collect()
 }
 
-/// Markdown 表のセル用。制御文字を空白にし、`|` をエスケープする。
+/// Markdown 表のセル用。制御文字を空白にし、`\` を先に、次に `|` をエスケープする。
 fn table_cell(s: &str) -> String {
-    flatten_controls(s).replace('|', "\\|")
+    flatten_controls(s)
+        .replace('\\', "\\\\")
+        .replace('|', "\\|")
 }
 
 /// `content` をインラインコードとして包む。区切りは内容中の最長バッククォート連続より長くし、
@@ -1127,5 +1129,19 @@ mod tests {
         let md = render(&[a, eval("b", 40.0)]);
         assert!(md.contains("| correctness | 25.0 | 50 | 50% |"));
         assert!(md.contains("| resource_usage | 0.0 | 5 | 0% |"));
+    }
+
+    #[test]
+    fn table_cell_escapes_backslash_before_pipe() {
+        assert_eq!(table_cell("a\\|b"), "a\\\\\\|b");
+        assert_eq!(table_cell("a\\b"), "a\\\\b");
+        assert_eq!(table_cell("a|b"), "a\\|b");
+    }
+
+    #[test]
+    fn table_cell_flattens_unicode_line_separators() {
+        for sep in ['\u{2028}', '\u{2029}', '\u{0085}', '\n', '\r'] {
+            assert_eq!(table_cell(&format!("a{sep}b")), "a b");
+        }
     }
 }
