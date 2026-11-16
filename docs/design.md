@@ -76,7 +76,7 @@ flowchart TD
 ## 主要な制約
 
 - **候補のコードはホスト上の子プロセスとして動く。** compile と test はプロセス隔離のみで、Wasm サンドボックスは `--wasm-entry` を指定した Rust 候補の追加ステージである（[ADR-002](adr/ADR-002-sandbox-strategy.md)）。信頼できない候補を評価するときは、ホスト側でコンテナ等の隔離を用意すること。
-- **子プロセスに渡す環境変数は許可リスト方式。** `runner` の `ALLOWED_ENV` と `LC_*` 以外は渡さない。API キーは候補のプロセスに渡らない。
+- **子プロセスに渡す環境変数は許可リスト方式。** `runner` の `ALLOWED_ENV`（`PATH`・`HOME`・ツールチェーン用の変数など）と `LC_*` 以外は渡さない。API キーを環境変数としては渡さないだけで、候補は同じユーザーの権限で動くため、ホスト上のファイルや親プロセスの情報の読み取りまでは防げない（[#234](https://github.com/flipslidersand-labs/safecode-arena/issues/234)、[#300](https://github.com/flipslidersand-labs/safecode-arena/issues/300)）。
 - **出力には上限がある。** 取り込みは 4 MiB、出力ファイルは 64 MiB で打ち切る（`src/runner.rs` の `MAX_CAPTURE_BYTES` / `MAX_OUTPUT_FILE_BYTES`）。
 - **performance と reasoning は回帰比較に使わない。** performance は同じ run の候補間の相対値、reasoning は LLM の応答で揺れるため、`store::comparable_score` から除いている。
 - **回帰比較は実行条件が同じ run どうしだけ。** オプションや重みが違う run とは比べない。
