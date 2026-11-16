@@ -90,6 +90,33 @@ fn evaluate_broken_criterion_bench_candidate_fails_compile() {
 }
 
 #[test]
+#[ignore = "criterion の取得・ビルドが必要。CI は ignored-tests.yml が --ignored で実行する (#231)"]
+fn evaluate_criterion_bench_candidate_reports_clippy_warnings() {
+    // 空 lib.rs だけを clippy にかけて警告 0 件になっていた回帰を防ぐ (#231)。
+    let cand = write_candidate(
+        "lint_bench",
+        "use criterion::{criterion_group, criterion_main, Criterion};\n\
+         fn f() -> i32 { return 1; }\n\
+         fn b(c: &mut Criterion) { c.bench_function(\"x\", |b| b.iter(|| f())); }\n\
+         criterion_group!(benches, b);\n\
+         criterion_main!(benches);\n",
+    );
+
+    let out = Command::cargo_bin("safecode")
+        .unwrap()
+        .args(["evaluate", "--format", "json"])
+        .arg(cand.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let w = v[0]["lint_warnings"].as_u64().unwrap();
+    assert!(w >= 1, "lint_warnings: {}", v[0]["lint_warnings"]);
+}
+
+#[test]
 fn evaluate_without_candidates_fails() {
     Command::cargo_bin("safecode")
         .unwrap()
@@ -829,4 +856,37 @@ fn js_eslint_disable_comment_does_not_hide_findings() {
         .assert()
         .success()
         .stdout(predicate::str::is_match(r"\b[1-9][0-9]* warn").unwrap());
+}
+
+#[test]
+fn db_skips_comparison_when_prop_tests_condition_differs() {
+    let work = tempfile::tempdir().unwrap();
+    let db = work.path().join("history.db");
+    let subject = work.path().join("subject.rs");
+    let prop_dir = work.path().join("props");
+    std::fs::create_dir(&prop_dir).unwrap();
+    std::fs::write(&subject, "pub fn add(a: i32, b: i32) -> i32 { a + b }\n").unwrap();
+
+    // run #1: --prop-tests なし
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(&subject)
+        .args(["--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("run #1 を保存"));
+
+    // run #2: --prop-tests あり（条件違い）→ 比較スキップ、#1 を基準にしない
+    Command::cargo_bin("safecode")
+        .unwrap()
+        .arg("evaluate")
+        .arg(&subject)
+        .args(["--prop-tests", prop_dir.to_str().unwrap()])
+        .args(["--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("比較をスキップ"))
+        .stderr(predicate::str::contains("prop_tests=true"))
+        .stderr(predicate::str::contains("リグレッションなし").not());
 }

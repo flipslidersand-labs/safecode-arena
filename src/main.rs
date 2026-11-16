@@ -240,6 +240,8 @@ fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
             wasm_entry: args.wasm_entry.as_deref(),
             tests: args.tests.is_some(),
             prop_tests: args.prop_tests.is_some(),
+            wasm_fuel: args.wasm_fuel,
+            wasm_max_memory_mb: args.wasm_max_memory_mb,
             // 評価失敗で脱落した候補も含める（脱落でキーが変わると #181 の脱落検出が効かなくなる）。
             rubrics: candidates
                 .iter()
@@ -267,13 +269,15 @@ struct RunConditions<'a> {
     wasm_entry: Option<&'a str>,
     tests: bool,
     prop_tests: bool,
+    wasm_fuel: u64,
+    wasm_max_memory_mb: usize,
     /// 今回評価した候補の (言語名, 適用ルーブリック)。
     rubrics: Vec<(&'a str, Rubric)>,
 }
 
 /// スコアに影響する実行条件を正規化した比較キー（#191, #243）。
 ///
-/// 含めるもの: --llm-review / --mutation / --wasm-entry、--tests・--prop-tests を使ったか（有無のみ、パスは含めない）、
+/// 含めるもの: --llm-review / --mutation / --wasm-entry / --wasm-fuel / --wasm-max-memory-mb（上限超過で resource_usage が変わる）、--tests・--prop-tests を使ったか（有無のみ、パスは含めない）、
 /// 評価した言語ごとの適用ルーブリック（重み）。ハッシュは使わず、言語名で整列・重複排除した
 /// 文字列にするため決定的で、不一致時に原因を目視できる。
 /// 含めないもの: --out / --format / --timeout-secs / --db / --regression-threshold（採点に無関係、または判定側の設定）。
@@ -296,12 +300,14 @@ fn run_options_key(c: &RunConditions) -> String {
         })
         .collect();
     format!(
-        "llm_review={};mutation={};wasm_entry={};tests={};prop_tests={};rubric={}",
+        "llm_review={};mutation={};wasm_entry={};tests={};prop_tests={};wasm_fuel={};wasm_max_memory_mb={};rubric={}",
         c.llm_review,
         c.mutation,
         c.wasm_entry.unwrap_or(""),
         c.tests,
         c.prop_tests,
+        c.wasm_fuel,
+        c.wasm_max_memory_mb,
         weights.join("|")
     )
 }
@@ -496,8 +502,21 @@ mod tests {
             wasm_entry: None,
             tests: true,
             prop_tests: false,
+            wasm_fuel: 100_000_000,
+            wasm_max_memory_mb: 64,
             rubrics: vec![("rust", Rubric::default())],
         }
+    }
+
+    #[test]
+    fn key_changes_with_wasm_limits() {
+        let k = run_options_key(&base());
+        let mut c = base();
+        c.wasm_fuel = 1;
+        assert_ne!(run_options_key(&c), k);
+        let mut c = base();
+        c.wasm_max_memory_mb = 1;
+        assert_ne!(run_options_key(&c), k);
     }
 
     #[test]

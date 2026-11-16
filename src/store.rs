@@ -134,11 +134,11 @@ impl Store {
     }
 
     /// 実行条件が `options` と同じ最新の run_id（比較の基準）。
-    /// 列追加前の旧 run（options が NULL）は条件不明だが互換として扱う
-    /// （既存 DB の基準を失って回帰検出が空白になるのを避ける）。
+    /// 列追加前の旧 run（options が NULL）は条件不明なので基準にしない
+    /// （誤った回帰判定の基準になるのを避ける。旧 run しか無ければ 1 回比較をスキップ）。
     pub fn latest_run_id_matching(&self, options: &str) -> Result<Option<i64>> {
         let id = self.conn.query_row(
-            "SELECT MAX(id) FROM runs WHERE options = ?1 OR options IS NULL",
+            "SELECT MAX(id) FROM runs WHERE options = ?1",
             [options],
             |r| r.get::<_, Option<i64>>(0),
         )?;
@@ -522,7 +522,7 @@ mod tests {
     }
 
     #[test]
-    fn opens_old_schema_db_and_treats_null_options_as_compatible() {
+    fn opens_old_schema_db_and_excludes_null_options_from_baseline() {
         // 列追加前の DB（runs に options 列なし）
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
@@ -535,11 +535,11 @@ mod tests {
         )
         .unwrap();
         let mut s = Store::from_conn(conn).unwrap();
-        // 旧 run は条件不明 → どの条件でも基準になる
-        assert_eq!(s.latest_run_id_matching("opt=a").unwrap(), Some(1));
+        // 旧 run は条件不明 → どの条件でも基準にしない（#256）
+        assert_eq!(s.latest_run_id_matching("opt=a").unwrap(), None);
         let r2 = s.save_run("new", "opt=b", &[eval("x", 1.0)]).unwrap();
         assert_eq!(s.latest_run_id_matching("opt=b").unwrap(), Some(r2));
-        assert_eq!(s.latest_run_id_matching("opt=a").unwrap(), Some(1));
+        assert_eq!(s.latest_run_id_matching("opt=a").unwrap(), None);
         // 2 回目の初期化（列が既にある）でも失敗しない
         let s2 = Store::from_conn(s.conn).unwrap();
         assert_eq!(s2.latest_run_id().unwrap(), Some(r2));
