@@ -3,13 +3,20 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-No version has been tagged or released yet (`Cargo.toml` declares `0.1.0`), so every change is listed under `Unreleased`.
-Entries are the titles of merged `feat` / `fix` pull requests, oldest first.
+No version has been tagged or released yet (`Cargo.toml` declares `0.1.0`), so everything is listed under `Unreleased`.
+Entries are the titles of merged `feat` / `fix` pull requests, oldest first. Refactors, tests, docs, CI and dependency updates are not listed.
+The first features were committed directly, before pull requests were used; those entries are commit subjects and carry no link.
 
 ## [Unreleased]
 
 ### Added
 
+- Phase 1 evaluation pipeline (compile, test, scoring, Markdown report)
+- Phase 2: timeout kill, rubric config, JSON output, external tests
+- Phase 3: clippy and property test stages, multi-axis scoring
+- Phase 4-a: SQLite persistence, regression detection, `history`
+- Phase 4-b: Wasm sandbox; enhanced comparison report
+- Python support (multi-language evaluation)
 - Go / JavaScript 対応 ([#8](https://github.com/flipslidersand-labs/safecode-arena/pull/8))
 - Phase 7 — staticcheck + ESLint + language-specific rubric ([#9](https://github.com/flipslidersand-labs/safecode-arena/pull/9))
 - **phase8**: mutation testing — cargo mutants で correctness を強化 ([#44](https://github.com/flipslidersand-labs/safecode-arena/pull/44))
@@ -20,6 +27,7 @@ Entries are the titles of merged `feat` / `fix` pull requests, oldest first.
 - **phase14**: LLM セマンティックレビュー軸 — Claude/Ollama で reasoning スコア ([#79](https://github.com/flipslidersand-labs/safecode-arena/pull/79))
 - **phase13**: TypeScript サポート — tsc --noEmit + node --test ([#80](https://github.com/flipslidersand-labs/safecode-arena/pull/80))
 - **phase15**: generate サブコマンド — 自然言語 spec から候補を LLM 自動生成 ([#81](https://github.com/flipslidersand-labs/safecode-arena/pull/81))
+- PRテンプレートにtest-generator呼び出しチェック項目を追加 ([#103](https://github.com/flipslidersand-labs/safecode-arena/pull/103))
 - **test-summary**: テスト出力の結果行パーサを追加 (#226 PR1) ([#236](https://github.com/flipslidersand-labs/safecode-arena/pull/236))
 
 ### Fixed
