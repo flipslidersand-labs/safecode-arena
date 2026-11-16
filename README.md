@@ -81,6 +81,10 @@ Weights can be overridden via `[weights]` in `safecode.toml`.
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama API endpoint |
 | `OLLAMA_MODEL` | `qwen2.5-coder:7b` | Ollama model for code generation/review |
 
+### CI configuration (required)
+
+The workflows that use `runs-on: ${{ vars.GATE_RUNNER }}` (`eval.yml`, `ignored-tests.yml`) have no default runner. Set the repository or organization variable `GATE_RUNNER` to a runner label, or those jobs will not run.
+
 ## Development
 
 ```bash
