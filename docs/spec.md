@@ -37,8 +37,8 @@ Fuzzing
 | 軸              | 重み | 実装状況                                                                                                                                                                                    |
 | --------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | correctness     | 50   | ✅ compile 40% + test 40% + prop_test 20%（mutation 有効時: 30+30+15+mutation 25%）<br>mutation: Rust=`cargo-mutants`、Python=`mutmut`、Go=`gremlins`（各ツールが PATH になければ Skipped） |
-| security        | 20   | ✅ unsafe ヒューリスティック 50% + clippy 50%                                                                                                                                               |
-| performance     | 15   | ✅ 候補間 compile+test 時間の相対比較                                                                                                                                                       |
+| security        | 20   | ✅ unsafe ヒューリスティック 40% + lint 40% + `cargo audit` 20%（audit が結果を返せないときは audit 項を除き、残りを 50% ずつに再配分）                                                     |
+| performance     | 15   | ✅ 候補間の相対比較。compile と test が通った候補が全員 Criterion の計測値を持つときはその値、それ以外は compile+test 時間                                                                  |
 | maintainability | 10   | ✅ 関数長ヒューリスティック 60% + clippy 40%                                                                                                                                                |
 | resource_usage  | 5    | ✅ Wasm サンドボックス実行の成否                                                                                                                                                            |
 
@@ -82,6 +82,71 @@ safecode evaluate cand_a.rs cand_b.rs cand_c.rs --tests tests/ --out report.md
 | 2    | cand_a | 25.0   | ✅ 900ms  | ❌ failed |
 **採用候補**: `cand_b`（50.0点）
 ```
+
+## CLI リファレンス
+
+`safecode --help` と各サブコマンドの `--help` の出力（版 0.1.0）、および `src/main.rs` の定義に基づく。
+
+### `safecode evaluate [OPTIONS] [CANDIDATES]...`
+
+1 つ以上の候補ファイルを検証・採点する。言語は拡張子（`.rs` `.py` `.go` `.js` `.ts`）で決まる。
+
+| オプション | 既定値 | 内容 |
+| --- | --- | --- |
+| `--tests <DIR>` | なし | テストファイルを置いたディレクトリ |
+| `--prop-tests <DIR>` | なし | proptest を使った property test を置いたディレクトリ |
+| `--timeout-secs <N>` | 60 | 各ステージのタイムアウト秒数 |
+| `--out <FILE>` | 標準出力 | レポートの出力先 |
+| `--format <FORMAT>` | `markdown` | `markdown` / `json` / `html` |
+| `--config <FILE>` | `./safecode.toml` があれば使用 | 採点ルーブリックの設定ファイル |
+| `--db <FILE>` | なし | 評価結果を保存する SQLite DB。指定すると過去 run との回帰を検出する |
+| `--regression-threshold <X>` | 1 | 回帰と判定する点数の下落幅（0 以上の有限値） |
+| `--wasm-entry <NAME>` | なし | Wasm サンドボックスで実行するエントリ関数名（引数なしの `pub fn`）。指定すると `wasm32-wasip1` にビルドして隔離実行する |
+| `--wasm-fuel <N>` | 100000000 | Wasm 実行の fuel 上限（命令数） |
+| `--wasm-max-memory-mb <N>` | 64 | Wasm 実行のメモリ上限（MB、1〜4096） |
+| `--mutation` | off | ミューテーションテストを実行する。ツールが PATH に無ければ Skipped |
+| `--llm-review` | off | LLM セマンティックレビューを実行し reasoning 軸を採点する |
+
+### `safecode generate [OPTIONS] <SPEC>`
+
+自然言語の spec ファイル（`.md` / `.txt`）から候補を LLM で生成し、検証・採点する。生成される候補は Rust。
+
+| オプション | 既定値 | 内容 |
+| --- | --- | --- |
+| `--candidates <N>` | 3 | 生成する候補数（1〜8） |
+| `--timeout-secs <N>` | 30 | 評価ステージのタイムアウト秒数 |
+| `--llm-timeout-secs <N>` | 120 | LLM 呼び出しのタイムアウト秒数 |
+| `--out <FILE>` | 標準出力 | レポートの出力先 |
+| `--format <FORMAT>` | `markdown` | `markdown` / `json` / `html` |
+| `--config <FILE>` | `./safecode.toml` があれば使用 | 採点ルーブリックの設定ファイル |
+
+### `safecode history --db <FILE>`
+
+保存済みの run 履歴を一覧表示する。`--db` は必須。
+
+### 環境変数
+
+`--llm-review` と `generate` でだけ参照する（`src/llm_client.rs`）。
+
+| 変数 | 既定値 | 内容 |
+| --- | --- | --- |
+| `SAFECODE_LLM_BACKEND` | `claude` | `ollama` を指定すると Ollama、それ以外は Claude |
+| `ANTHROPIC_API_KEY` | なし | Claude を使うときに必須。未設定なら LLM 呼び出しは結果なしになる |
+| `ANTHROPIC_MODEL` | `claude-haiku-4-5-20251001` | Claude のモデル |
+| `OLLAMA_HOST` | `http://localhost:11434` | Ollama の API エンドポイント |
+| `OLLAMA_MODEL` | `qwen2.5-coder:7b` | Ollama のモデル |
+
+### 設定ファイル（`safecode.toml`）
+
+`[weights]` に 5 軸（`correctness` `security` `performance` `maintainability` `resource_usage`）と任意の `reasoning` を書く。`[weights.rust]` `[weights.python]` `[weights.go]` `[weights.javascript]` `[weights.typescript]` で言語別に上書きできる。未知のキー、有限でない値、負の値はエラーになる（`src/config.rs`）。
+
+### 終了コード
+
+| コード | 条件 |
+| --- | --- |
+| 0 | 正常終了（候補のコンパイルやテストが失敗していても、評価自体が完了すれば 0） |
+| 1 | 実行エラー（候補ファイルの指定なし、ファイルが無い、未対応の拡張子など）。または `--db` 指定時に回帰を検出した |
+| 2 | 引数の誤り（未知のオプションなど） |
 
 ## 成功条件
 
