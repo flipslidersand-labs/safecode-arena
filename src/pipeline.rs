@@ -58,6 +58,7 @@ path = "src/lib.rs"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+proptest = "1"
 
 [[bench]]
 name = "bench"
@@ -142,6 +143,32 @@ fn copy_ext(src_dir: &Path, dest: &Path, ext: &str) -> Result<()> {
             fs::copy(&path, dest.join(name))
                 .with_context(|| format!("テストのコピーに失敗: {}", path.display()))?;
         }
+    }
+    Ok(())
+}
+
+/// `copy_ext` と同様だが、`dest` に同名ファイルが既にあればエラーにする。
+/// 候補ソースを先に書き込む経路で、テストファイルが候補を上書きするのを防ぐ。
+fn copy_ext_no_clobber(src_dir: &Path, dest: &Path, ext: &str) -> Result<()> {
+    fs::create_dir_all(dest).context("コピー先ディレクトリの作成に失敗")?;
+    for entry in fs::read_dir(src_dir)
+        .with_context(|| format!("テストディレクトリの読込に失敗: {}", src_dir.display()))?
+    {
+        let path = entry?.path();
+        if path.extension().and_then(|e| e.to_str()) != Some(ext) {
+            continue;
+        }
+        let name = path.file_name().unwrap();
+        let target = dest.join(name);
+        if target.exists() {
+            anyhow::bail!(
+                "テストファイル名が候補ファイルと衝突: {} ({} は候補が使用済み。リネームしてください)",
+                path.display(),
+                name.to_string_lossy()
+            );
+        }
+        fs::copy(&path, &target)
+            .with_context(|| format!("テストのコピーに失敗: {}", path.display()))?;
     }
     Ok(())
 }
@@ -461,20 +488,26 @@ const RUSTC_FORCE_WARN_LINTS: &[&str] = &[
 
 /// `cargo clippy` の引数。`--force-warn` は候補先頭の `#![allow(...)]` でも警告を出させる (#237)。
 /// CARGO_TERM_COLOR=always(CI 既定)だと警告行に ANSI が付き件数を数えられないため色を切る。
-fn clippy_args() -> Vec<&'static str> {
-    let mut args = vec![
-        "clippy",
-        "--color",
-        "never",
-        "--",
-        "--force-warn",
-        "clippy::all",
-    ];
+fn clippy_args(is_bench: bool) -> Vec<&'static str> {
+    let mut args = vec!["clippy"];
+    if is_bench {
+        args.push("--benches");
+    }
+    args.extend(["--color", "never", "--", "--force-warn", "clippy::all"]);
     for lint in RUSTC_FORCE_WARN_LINTS {
         args.push("--force-warn");
         args.push(lint);
     }
     args
+}
+
+/// Rust 候補の test ステージで使う `cargo` 引数。ベンチ候補は `--benches` を付ける (#231)。
+fn rust_test_args(is_bench: bool) -> &'static [&'static str] {
+    if is_bench {
+        &["test", "--color", "never", "--benches"]
+    } else {
+        &["test", "--color", "never"]
+    }
 }
 
 /// Rust 候補の compile ステージで使う `cargo` 引数。
@@ -531,13 +564,13 @@ fn run_rust_stages(
     }
 
     let mut t = Command::new("cargo");
-    t.args(["test", "--color", "never"]).current_dir(root);
+    t.args(rust_test_args(is_bench)).current_dir(root);
     let test = run_test_stage("test", Language::Rust, t, timeout, false);
 
     let mut c = Command::new("cargo");
-    c.args(clippy_args()).current_dir(root);
-    let (lint, lint_stderr) = runner::run_stage_capture("clippy", c, timeout);
-    let lint_warnings = count_lint_warnings(&lint_stderr);
+    c.args(clippy_args(is_bench)).current_dir(root);
+    let (lint, lint_stderr, truncated) = runner::run_stage_capture_flagged("clippy", c, timeout);
+    let lint_warnings = floor_if_truncated(count_lint_warnings(&lint_stderr), truncated);
 
     let prop_test = if let Some(prop_dir) = prop_tests_dir {
         copy_ext_keep_existing(prop_dir, &root.join("tests"), "rs", "prop_")?;
@@ -661,7 +694,7 @@ fn run_python_stages(
 ) -> Result<StageResults> {
     fs::write(root.join("candidate.py"), &candidate.source).context("候補ソースの書込に失敗")?;
     if let Some(dir) = tests_dir {
-        copy_ext(dir, root, "py")?;
+        copy_ext_no_clobber(dir, root, "py")?;
     }
 
     // compile: 構文チェック
@@ -689,11 +722,14 @@ fn run_python_stages(
         l.arg("-c")
             .arg("ruff check --ignore-noqa --output-format=concise candidate.py 1>&2; true")
             .current_dir(root);
-        let (outcome, out) = runner::run_stage_capture("ruff", l, timeout);
+        let (outcome, out, truncated) = runner::run_stage_capture_flagged("ruff", l, timeout);
         if ruff_run_failed(&out) {
             (StageOutcome::Skipped, 0)
         } else {
-            (outcome, count_ruff_findings(&out))
+            (
+                outcome,
+                floor_if_truncated(count_ruff_findings(&out), truncated),
+            )
         }
     } else {
         (StageOutcome::Skipped, 0)
@@ -853,7 +889,7 @@ fn run_go_stages(
     fs::write(root.join("go.mod"), go_mod).context("go.mod の書込に失敗")?;
     fs::write(root.join("candidate.go"), &candidate.source).context("候補ソースの書込に失敗")?;
     if let Some(dir) = tests_dir {
-        copy_ext(dir, root, "go")?;
+        copy_ext_no_clobber(dir, root, "go")?;
     }
 
     // compile: go build
@@ -876,20 +912,27 @@ fn run_go_stages(
         l.arg("-c")
             .arg("staticcheck ./... 2>&1; true")
             .current_dir(root);
-        let (outcome, out) = runner::run_stage_capture("staticcheck", l, timeout);
+        let (outcome, out, truncated) =
+            runner::run_stage_capture_flagged("staticcheck", l, timeout);
         if go_lint_run_failed(&out) {
             (StageOutcome::Skipped, 0)
         } else {
-            (outcome, count_staticcheck_findings(&out))
+            (
+                outcome,
+                floor_if_truncated(count_staticcheck_findings(&out), truncated),
+            )
         }
     } else {
         let mut l = Command::new("sh");
         l.arg("-c").arg("go vet ./... 1>&2; true").current_dir(root);
-        let (outcome, out) = runner::run_stage_capture("go-vet", l, timeout);
+        let (outcome, out, truncated) = runner::run_stage_capture_flagged("go-vet", l, timeout);
         if go_lint_run_failed(&out) {
             (StageOutcome::Skipped, 0)
         } else {
-            (outcome, count_go_vet_findings(&out))
+            (
+                outcome,
+                floor_if_truncated(count_go_vet_findings(&out), truncated),
+            )
         }
     };
 
@@ -1057,7 +1100,7 @@ fn run_js_stages(
 ) -> Result<StageResults> {
     fs::write(root.join("candidate.js"), &candidate.source).context("候補ソースの書込に失敗")?;
     if let Some(dir) = tests_dir {
-        copy_ext(dir, root, "js")?;
+        copy_ext_no_clobber(dir, root, "js")?;
     }
 
     // compile: 構文チェック
@@ -1084,12 +1127,15 @@ fn run_js_stages(
         l.arg("-c")
             .arg(eslint_cmd("candidate.js"))
             .current_dir(root);
-        let (outcome, out) = runner::run_stage_capture("eslint", l, timeout);
+        let (outcome, out, truncated) = runner::run_stage_capture_flagged("eslint", l, timeout);
         if eslint_run_failed(&out) {
             // 実行失敗を「指摘 0 件」にしない (#152)
             (StageOutcome::Skipped, 0)
         } else {
-            (outcome, count_eslint_findings(&out))
+            (
+                outcome,
+                floor_if_truncated(count_eslint_findings(&out), truncated),
+            )
         }
     } else {
         (StageOutcome::Skipped, 0)
@@ -1129,7 +1175,7 @@ fn run_ts_stages(
     fs::write(root.join("tsconfig.json"), tsconfig).context("tsconfig.json の書込に失敗")?;
     fs::write(root.join("candidate.ts"), &candidate.source).context("候補ソースの書込に失敗")?;
     if let Some(dir) = tests_dir {
-        copy_ext(dir, root, "ts")?;
+        copy_ext_no_clobber(dir, root, "ts")?;
     }
 
     if !tsc_available() {
@@ -1173,12 +1219,15 @@ fn run_ts_stages(
         l.arg("-c")
             .arg(eslint_cmd("candidate.ts"))
             .current_dir(root);
-        let (outcome, out) = runner::run_stage_capture("eslint", l, timeout);
+        let (outcome, out, truncated) = runner::run_stage_capture_flagged("eslint", l, timeout);
         if eslint_run_failed(&out) {
             // 実行失敗を「指摘 0 件」にしない (#152)
             (StageOutcome::Skipped, 0)
         } else {
-            (outcome, count_eslint_findings(&out))
+            (
+                outcome,
+                floor_if_truncated(count_eslint_findings(&out), truncated),
+            )
         }
     } else {
         (StageOutcome::Skipped, 0)
@@ -1258,6 +1307,21 @@ fn run_bench_stage(root: &Path, timeout: Duration) -> Option<u64> {
     bench_ns_after_run(root, &output)
 }
 
+/// 出力が取り込み上限で切り詰められた場合の lint 件数の下限。
+///
+/// 切り詰め後の出力で数えると過少になり、大量の警告を出すほど得をしてしまう。
+/// 警告過多とみなし、security / maintainability の係数が 0 になる値へ引き上げる。
+const TRUNCATED_LINT_FLOOR: usize = 1000;
+
+/// 切り詰めが発生していれば件数を `TRUNCATED_LINT_FLOOR` 以上にする。
+fn floor_if_truncated(count: usize, truncated: bool) -> usize {
+    if truncated {
+        count.max(TRUNCATED_LINT_FLOOR)
+    } else {
+        count
+    }
+}
+
 /// `cargo bench` のコマンドを組み立てる。出力先を `root/target` に固定し、
 /// 運用側の `CARGO_TARGET_DIR`（許可リスト経由で入る）で結果の場所がずれないようにする。
 fn bench_command(root: &Path) -> Command {
@@ -1313,7 +1377,8 @@ fn read_criterion_estimates_ns(root: &Path) -> Option<u64> {
     }
     let mut min = None;
     walk(&root.join("target/criterion"), 0, &mut min);
-    min.map(|v| v.round() as u64)
+    // 0.5ns 未満が 0 に丸められると scoring で最速=0 扱いになり比率が歪むため、下限を 1ns にする (#285)
+    min.map(|v| (v.round() as u64).max(1))
 }
 
 /// estimates.json の `median.point_estimate` (ns) を取り出す純関数。
@@ -1492,6 +1557,27 @@ criterion_main!(benches);"#;
         assert_eq!(rust_build_args(true), ["build", "--benches"]);
         // 通常の lib 候補のコマンドは変えない。
         assert_eq!(rust_build_args(false), ["build"]);
+    }
+
+    /// 回帰 (#231): test / clippy もベンチ候補では `--benches` を付ける。
+    #[test]
+    fn test_and_clippy_args_include_benches_only_for_bench_candidates() {
+        assert_eq!(
+            rust_test_args(true),
+            ["test", "--color", "never", "--benches"]
+        );
+        assert_eq!(rust_test_args(false), ["test", "--color", "never"]);
+        let b = clippy_args(true);
+        assert_eq!(&b[..4], ["clippy", "--benches", "--color", "never"]);
+        assert!(!clippy_args(false).contains(&"--benches"));
+    }
+
+    /// 回帰 (#231): Criterion 用 Cargo.toml にも proptest を dev-dependency として含める。
+    /// (含めるだけ。prop_test ステージ自体はベンチ候補向けに変えていない。)
+    #[test]
+    fn criterion_cargo_toml_declares_proptest_dev_dependency() {
+        assert!(CARGO_TOML_WITH_CRITERION.contains("proptest"));
+        assert!(CARGO_TOML_WITH_CRITERION.contains("criterion"));
     }
 }
 
@@ -1933,6 +2019,51 @@ mod copy_assemble_tests {
         );
     }
 
+    /// テストディレクトリに候補ファイルと同名のファイルがあっても候補を上書きさせない。
+    fn assert_collision_is_error(
+        name: &str,
+        run: fn(&Path, &Candidate, Duration, Option<&Path>) -> Result<StageResults>,
+    ) {
+        let d = tempfile::tempdir().unwrap();
+        let tests = d.path().join("tests");
+        write(&tests, name, "EVIL");
+        let root = d.path().join("root");
+        fs::create_dir_all(&root).unwrap();
+        let res = run(
+            &root,
+            &cand("CANDIDATE"),
+            Duration::from_secs(5),
+            Some(&tests),
+        );
+        let err = format!("{:#}", res.err().expect("衝突はエラーになるべき"));
+        assert!(err.contains(name), "{err}");
+        assert_eq!(fs::read_to_string(root.join(name)).unwrap(), "CANDIDATE");
+    }
+
+    #[test]
+    fn python_tests_dir_candidate_name_collision_is_error() {
+        assert_collision_is_error("candidate.py", |r, c, t, d| {
+            run_python_stages(r, c, t, d, false)
+        });
+    }
+
+    #[test]
+    fn go_tests_dir_candidate_name_collision_is_error() {
+        assert_collision_is_error("candidate.go", |r, c, t, d| {
+            run_go_stages(r, c, t, d, false)
+        });
+    }
+
+    #[test]
+    fn js_tests_dir_candidate_name_collision_is_error() {
+        assert_collision_is_error("candidate.js", run_js_stages);
+    }
+
+    #[test]
+    fn ts_tests_dir_candidate_name_collision_is_error() {
+        assert_collision_is_error("candidate.ts", run_ts_stages);
+    }
+
     #[test]
     fn copy_ext_does_not_recurse_and_overwrites_existing() {
         let d = tempfile::tempdir().unwrap();
@@ -2189,7 +2320,7 @@ mod clippy_args_tests {
     #[test]
     fn clippy_args_force_warn_clippy_and_rustc_lints() {
         // `-W` は候補の `#![allow]` に負けるため `--force-warn` を使う (#237)
-        let a = clippy_args();
+        let a = clippy_args(false);
         assert!(!a.contains(&"-W"));
         for lint in [
             "clippy::all",
@@ -2333,6 +2464,20 @@ mod bench_estimates_tests {
         assert_eq!(read_criterion_estimates_ns(d.path()), Some(20));
     }
 
+    /// 回帰 (#285): 0.5ns 未満の median が 0ns に丸められて performance の比率が歪まない。
+    #[test]
+    fn read_estimates_sub_ns_is_not_rounded_to_zero() {
+        let d = tempfile::tempdir().unwrap();
+        write_est(d.path(), "fast", &est("0.3"));
+        assert_eq!(read_criterion_estimates_ns(d.path()), Some(1));
+        let d2 = tempfile::tempdir().unwrap();
+        write_est(d2.path(), "slow", &est("2.0"));
+        let fast = read_criterion_estimates_ns(d.path()).unwrap();
+        let slow = read_criterion_estimates_ns(d2.path()).unwrap();
+        assert!(fast > 0, "0ns になってはいけない");
+        assert_eq!(fast as f64 / slow as f64, 0.5);
+    }
+
     #[test]
     fn read_estimates_ignores_non_new_dirs() {
         let d = tempfile::tempdir().unwrap();
@@ -2377,5 +2522,20 @@ mod bench_estimates_tests {
             .find(|(k, _)| *k == "CARGO_TARGET_DIR")
             .and_then(|(_, v)| v.map(|v| v.to_os_string()));
         assert_eq!(v, Some(d.path().join("target").into_os_string()));
+    }
+}
+
+#[cfg(test)]
+mod truncated_lint_tests {
+    use super::*;
+
+    #[test]
+    fn truncated_output_floors_lint_count_to_zero_score() {
+        assert_eq!(floor_if_truncated(3, false), 3);
+        assert_eq!(floor_if_truncated(3, true), TRUNCATED_LINT_FLOOR);
+        assert_eq!(floor_if_truncated(5000, true), 5000);
+        // 床値で security / maintainability の係数が 0 になる(scoring.rs の閾値 30 件以上)。
+        let floored = floor_if_truncated(0, true);
+        assert!(floored >= 30, "床値が採点の閾値未満: {floored}");
     }
 }

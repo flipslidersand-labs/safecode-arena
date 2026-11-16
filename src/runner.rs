@@ -43,11 +43,12 @@ fn read_capped<R: Read>(reader: &mut R, max_bytes: usize) -> Vec<u8> {
 ///
 /// 上限を超える場合は先頭と末尾を残し、間に切り詰めの印を入れる。
 /// UTF-8 の途中で切れても lossy 変換で安全に扱う。
-fn read_bounded(mut file: std::fs::File, max_bytes: usize) -> String {
+fn read_bounded(mut file: std::fs::File, max_bytes: usize) -> (String, bool) {
     let len = file.metadata().map(|m| m.len()).unwrap_or(0);
     let _ = file.seek(SeekFrom::Start(0));
     if len <= max_bytes as u64 {
-        return String::from_utf8_lossy(&read_capped(&mut file, max_bytes)).into_owned();
+        let text = String::from_utf8_lossy(&read_capped(&mut file, max_bytes)).into_owned();
+        return (text, false);
     }
     let half = max_bytes / 2;
     let mut head = vec![0u8; half];
@@ -61,17 +62,18 @@ fn read_bounded(mut file: std::fs::File, max_bytes: usize) -> String {
     if !tail_ok {
         tail.clear();
     }
-    format!(
+    let text = format!(
         "{}\n…(出力が {} KiB を超えたため中間 {} KiB を切り詰め)…\n{}",
         String::from_utf8_lossy(&head),
         max_bytes / 1024,
         (len - 2 * half as u64) / 1024,
         String::from_utf8_lossy(&tail)
-    )
+    );
+    (text, true)
 }
 
 /// キャプチャ先ファイルの内容を上限付きで読み取る。
-fn read_all(file: std::fs::File) -> String {
+fn read_all(file: std::fs::File) -> (String, bool) {
     read_bounded(file, MAX_CAPTURE_BYTES)
 }
 
@@ -86,6 +88,7 @@ fn clip_line(line: &str) -> String {
 /// 失敗理由の表示用に先頭 20 行へ要約する。各行は長さも切り詰める。
 fn summarize(file: std::fs::File) -> String {
     read_all(file)
+        .0
         .lines()
         .take(20)
         .map(clip_line)
@@ -175,6 +178,19 @@ pub fn run_stage_capture(
     command: std::process::Command,
     limit: Duration,
 ) -> (StageOutcome, String) {
+    let (outcome, captured, _) = run_stage_capture_flagged(label, command, limit);
+    (outcome, captured)
+}
+
+/// [`run_stage_capture`] に加え、出力が上限を超えて切り詰められたかを返す。
+///
+/// 出力から件数を数える呼び出し元は、切り詰め後の文字列では過少に数えるため
+/// このフラグを見て最低点側へ倒すこと(大量出力で件数を減らす悪用の防止)。
+pub fn run_stage_capture_flagged(
+    label: &str,
+    command: std::process::Command,
+    limit: Duration,
+) -> (StageOutcome, String, bool) {
     run_stage_capture_with(label, command, limit, MAX_OUTPUT_FILE_BYTES)
 }
 
@@ -183,7 +199,7 @@ fn run_stage_capture_with(
     command: std::process::Command,
     limit: Duration,
     max_file_bytes: u64,
-) -> (StageOutcome, String) {
+) -> (StageOutcome, String, bool) {
     let err_file = match tempfile::tempfile() {
         Ok(f) => f,
         Err(e) => {
@@ -192,6 +208,7 @@ fn run_stage_capture_with(
                     detail: format!("{label}: 一時ファイル生成失敗: {e}"),
                 },
                 String::new(),
+                false,
             );
         }
     };
@@ -203,6 +220,7 @@ fn run_stage_capture_with(
                     detail: format!("{label}: ファイル複製失敗: {e}"),
                 },
                 String::new(),
+                false,
             );
         }
     };
@@ -214,6 +232,7 @@ fn run_stage_capture_with(
                     detail: format!("{label}: ファイル複製失敗: {e}"),
                 },
                 String::new(),
+                false,
             );
         }
     };
@@ -235,6 +254,7 @@ fn run_stage_capture_with(
                     detail: format!("{label}: 起動失敗: {e}"),
                 },
                 String::new(),
+                false,
             );
         }
     };
@@ -295,8 +315,8 @@ fn run_stage_capture_with(
         }
     };
 
-    let captured = read_all(err_file);
-    (outcome, captured)
+    let (captured, truncated) = read_all(err_file);
+    (outcome, captured, truncated)
 }
 
 /// プロセスをタイムアウト付きで実行し、ステージ結果へ変換する。
@@ -483,7 +503,7 @@ mod tests {
         let mut cmd = Command::new("sh");
         cmd.args(["-c", "yes"]);
         let start = Instant::now();
-        let (outcome, captured) =
+        let (outcome, captured, _) =
             run_stage_capture_with("yes", cmd, Duration::from_secs(30), 1024 * 1024);
         assert!(start.elapsed() < Duration::from_secs(15));
         let StageOutcome::Failed { detail } = outcome else {
@@ -506,13 +526,30 @@ mod tests {
         let mut f = tempfile::tempfile().unwrap();
         std::io::Write::write_all(&mut f, "あ".repeat(1000).as_bytes()).unwrap();
         // 上限 98 → 先頭 49 バイト(16 文字 + 1 バイト)・末尾 49 バイト(1 バイト + 16 文字)。
-        let s = read_bounded(f, 98);
+        let (s, truncated) = read_bounded(f, 98);
+        assert!(truncated);
         let lines: Vec<&str> = s.lines().collect();
         assert_eq!(lines.len(), 3, "{s}");
         assert!(lines[1].contains("切り詰め"), "{s}");
         assert_eq!(lines[0], format!("{}\u{FFFD}", "あ".repeat(16)));
         assert_eq!(lines[2], format!("\u{FFFD}{}", "あ".repeat(16)));
         assert_eq!(s.matches('\u{FFFD}').count(), 2);
+    }
+
+    #[test]
+    fn flagged_capture_reports_truncation_only_over_limit() {
+        // 4 MiB 超の警告行を出す子: 切り詰められ、フラグが立つ(件数が過少になる状況)。
+        let mut big = Command::new("sh");
+        big.args(["-c", "yes 'warning: x' | head -c 5242880"]);
+        let (_, captured, truncated) =
+            run_stage_capture_flagged("big", big, Duration::from_secs(30));
+        assert!(truncated);
+        assert!(captured.contains("切り詰め"));
+        // 上限以内ならフラグは立たない。
+        let mut small = Command::new("sh");
+        small.args(["-c", "echo 'warning: x'"]);
+        let (_, _, truncated) = run_stage_capture_flagged("small", small, Duration::from_secs(5));
+        assert!(!truncated);
     }
 
     #[test]
