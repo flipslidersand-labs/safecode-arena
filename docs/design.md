@@ -14,6 +14,7 @@ flowchart TD
     main --> scoring
     main --> report
     main --> store
+    main --> wasm
     generator --> llm_client
     pipeline --> runner
     pipeline --> analysis
@@ -21,12 +22,14 @@ flowchart TD
     pipeline --> wasm
     pipeline --> llm
     pipeline --> scoring
+    pipeline --> config
     llm --> llm_client
+    llm --> report
     scoring --> analysis
     scoring --> config
 ```
 
-矢印は「呼び出す側 → 呼ばれる側」。`model` は全モジュールが共有する型なので図から省いた。
+矢印は「使う側 → 使われる側」。`model` は全モジュールが共有する型なので図から省いた。`main --> wasm` は引数の検証関数、`llm --> report` はコードフェンスの長さを決める `fence_for`（プロンプトのフェンス脱出対策）の利用である。
 
 ## モジュールの責務
 
@@ -43,27 +46,27 @@ flowchart TD
 | `llm` | LLM セマンティックレビュー（reasoning 軸）。プロンプト生成と応答の解析 |
 | `generator` | 自然言語 spec から N 候補を LLM で生成し、応答からコードブロックを取り出す |
 | `llm_client` | Claude / Ollama への HTTP 呼び出し（`pub(crate)`）。バックエンドは環境変数で選ぶ |
-| `scoring` | 各ステージの結果を重み付きで 5 軸の点数にする。performance は候補間の相対評価 |
+| `scoring` | 各ステージの結果を重み付きで 5 軸（+ 任意の reasoning）の点数にする。performance は候補間の相対評価 |
 | `report` | Markdown / HTML レポートの生成。候補由来の文字列のエスケープ |
 | `store` | SQLite への保存と、過去 run との回帰検出 |
 
 ## データの流れ（`evaluate`）
 
-1. `pipeline::load_candidates` がファイルを読み、拡張子から `Language` を決めて `Candidate` にする。
-2. `config::Config::load` が重みを読み、言語ごとの `Rubric` を決める。
-3. `pipeline::evaluate_candidate` が候補ごとに各ステージを実行する。各ステージは `runner` 経由の子プロセスで、結果は `StageOutcome`（Passed / Failed / TimedOut / Skipped）になる。
+1. `config::Config::load` が重みを読む。
+2. `pipeline::load_candidates` がファイルを読み、拡張子から `Language` を決めて `Candidate` にする。言語ごとの `Rubric` がここで決まる。
+3. `pipeline::evaluate_candidate` が候補ごとに各ステージを実行する。compile / test / lint などは `runner` 経由の子プロセス、Wasm は埋め込みの wasmtime、LLM レビューは HTTP 呼び出しである。結果は `StageOutcome`（Passed / Failed / TimedOut / Skipped）になる。
 4. `scoring` が correctness / security / maintainability / resource_usage を候補単体で採点する。
-5. 全候補がそろってから `scoring::assign_performance` が performance を相対評価で付け、`scoring::rank` が合計点の降順に並べる。
+5. 全候補がそろってから `scoring::assign_performance_each` が performance を相対評価で付け、`scoring::assign_reasoning_each` が reasoning を付ける（重みが 0 なら何もしない）。`scoring::rank` が合計点の降順に並べる。
 6. `report` が Markdown / HTML を生成する（JSON は `Evaluation` をそのまま出力）。
 7. `--db` 指定時は `store` が同じ実行条件の過去 run と比べ、回帰があれば終了コード 1 で終わる。
 
-`generate` は 1 の代わりに `generator::generate` が LLM から Rust の候補を受け取り、以降は同じ流れを通る。
+`generate` は別の短い経路である。`generator::generate` が LLM から Rust の候補を受け取り、既定のオプション（`EvalOptions::default()`）で `evaluate_candidate` を呼ぶ。外部テスト・property test・Wasm・mutation・LLM レビュー・`--db` による回帰検出は通らない。
 
 ## 外部依存
 
 | 種類 | 内容 |
 | --- | --- |
-| 言語ツールチェーン | 評価する言語のコンパイラ・テストランナー・lint（README の「Supported languages」の表）。任意ツールが PATH に無い場合、そのステージは Skipped になる |
+| 言語ツールチェーン | 評価する言語のコンパイラ・テストランナー・lint（README の「Supported languages」の表）。無いときの扱いはツールで違う: `ruff` / `eslint` / mutation ツールはそのステージが Skipped、`staticcheck` は `go vet` で代用、`cargo-audit` は 0 件扱い、`tsc` は全ステージが Skipped |
 | Wasm | `wasmtime`（クレートとして埋め込み）と `wasm32-wasip1` ターゲット（[ADR-007](adr/ADR-007-wasm-sandbox.md)） |
 | 永続化 | SQLite（`rusqlite`）。`--db` を指定したときだけ使う |
 | LLM | Anthropic Messages API または Ollama。`--llm-review` と `generate` でだけ呼ぶ |
