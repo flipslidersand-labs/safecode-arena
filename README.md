@@ -83,7 +83,7 @@ Weights can be overridden via `[weights]` in `safecode.toml`.
 
 ### CI configuration (required)
 
-The workflows that use `runs-on: ${{ vars.GATE_RUNNER }}` (`eval.yml`, `ignored-tests.yml`) have no default runner. Set the repository or organization variable `GATE_RUNNER` to a runner label, or those jobs will not run.
+The workflows that use `runs-on: ${{ vars.GATE_RUNNER }}` (`eval.yml`, `ignored-tests.yml`) have no default runner. Set the repository or organization variable `GATE_RUNNER` to a runner label. If it is unset, these jobs cannot be assigned a runner and will not complete (they fail or stay queued).
 
 ## Development
 
