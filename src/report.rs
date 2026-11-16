@@ -1,6 +1,7 @@
 //! Markdown / HTML レポート生成。
 
 use crate::model::{Evaluation, StageOutcome};
+use crate::pipeline::TRUNCATED_LINT_FLOOR;
 
 /// 軸スコアを取り出す関数の型（HTML レポートの軸テーブル用）。
 type AxisGetter = fn(&Evaluation) -> f64;
@@ -19,6 +20,9 @@ fn stage_cell(o: &StageOutcome) -> String {
 fn lint_cell(o: &StageOutcome, warnings: usize) -> String {
     match o {
         StageOutcome::Passed { .. } if warnings == 0 => "✅ 0 warn".to_string(),
+        StageOutcome::Passed { .. } if warnings >= TRUNCATED_LINT_FLOOR => {
+            format!("⚠️ {TRUNCATED_LINT_FLOOR}+ warn(切り詰め含む)")
+        }
         StageOutcome::Passed { .. } => format!("⚠️ {warnings} warn"),
         StageOutcome::Failed { .. } => "❌ failed".to_string(),
         StageOutcome::TimedOut { limit_ms } => format!("⏱ timeout({limit_ms}ms)"),
@@ -335,7 +339,10 @@ fn render_comparison(out: &mut String, evals: &[Evaluation]) {
     let min_warn = warns.iter().copied().min().unwrap_or(0);
     out.push_str("| Clippy警告 |");
     for w in &warns {
-        if *w == min_warn && warns.iter().any(|x| x != w) {
+        if *w >= TRUNCATED_LINT_FLOOR {
+            // 切り詰めによる床値は実数ではないので下限表示にし、✅ も付けない。
+            out.push_str(&format!(" {TRUNCATED_LINT_FLOOR}+件 |"));
+        } else if *w == min_warn && warns.iter().any(|x| x != w) {
             out.push_str(&format!(" **{w}件** ✅ |"));
         } else {
             out.push_str(&format!(" {w}件 |"));
@@ -515,6 +522,14 @@ pub fn render_html(evals: &[Evaluation]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lint_cell_shows_truncated_floor_as_lower_bound() {
+        let p = StageOutcome::Passed { duration_ms: 1 };
+        let c = super::lint_cell(&p, TRUNCATED_LINT_FLOOR);
+        assert!(c.contains("1000+") && c.contains("切り詰め"), "{c}");
+        assert_eq!(super::lint_cell(&p, 3), "⚠️ 3 warn");
+    }
+
     use super::*;
     use crate::model::AxisScores;
 
