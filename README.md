@@ -67,7 +67,7 @@ safecode generate myspec.md --candidates 5 --out report.md --format json
 | performance     | 15     | `bench_ns` (Criterion) preferred; falls back to relative compile+test time              |
 | maintainability | 10     | function-length heuristics 60% + clippy 40%                                             |
 | resource_usage  | 5      | pass/fail of sandboxed Wasm (wasm32-wasip1) execution                                   |
-| reasoning       | —      | LLM semantic review score (enabled with `--llm-review`, `SAFECODE_LLM_BACKEND`)         |
+| reasoning       | —      | LLM semantic review score (needs `--llm-review` and a positive `reasoning` weight; default weight is 0) |
 
 Weights can be overridden via `[weights]` in `safecode.toml`.
 
