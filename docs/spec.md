@@ -37,7 +37,7 @@ Fuzzing
 | 軸              | 重み | 実装状況                                                                                                                                                                                    |
 | --------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | correctness     | 50   | ✅ compile 40% + test 40% + prop_test 20%（mutation 有効時: 30+30+15+mutation 25%）<br>mutation: Rust=`cargo-mutants`、Python=`mutmut`、Go=`gremlins`（各ツールが PATH になければ Skipped） |
-| security        | 20   | ✅ unsafe ヒューリスティック 40% + lint 40% + `cargo audit` 20%（audit が結果を返せないときは audit 項を除き、残りを 50% ずつに再配分）                                                     |
+| security        | 20   | ✅ unsafe ヒューリスティック 40% + lint 40% + `cargo audit` 20%（audit の出力を解析できないときは audit 項を除き、残りを 50% ずつに再配分。`cargo-audit` が未導入のときは 0 件扱いで満点）                                                     |
 | performance     | 15   | ✅ 候補間の相対比較。compile と test が通った候補が全員 Criterion の計測値を持つときはその値、それ以外は compile+test 時間                                                                  |
 | maintainability | 10   | ✅ 関数長ヒューリスティック 60% + clippy 40%                                                                                                                                                |
 | resource_usage  | 5    | ✅ Wasm サンドボックス実行の成否                                                                                                                                                            |
@@ -85,7 +85,7 @@ safecode evaluate cand_a.rs cand_b.rs cand_c.rs --tests tests/ --out report.md
 
 ## CLI リファレンス
 
-`safecode --help` と各サブコマンドの `--help` の出力（版 0.1.0）、および `src/main.rs` の定義に基づく。
+`safecode --help` と各サブコマンドの `--help` の出力（版 0.1.0）、および `src/main.rs` の定義に基づく。値の名前は `--help` の表示のまま。
 
 ### `safecode evaluate [OPTIONS] [CANDIDATES]...`
 
@@ -93,19 +93,19 @@ safecode evaluate cand_a.rs cand_b.rs cand_c.rs --tests tests/ --out report.md
 
 | オプション | 既定値 | 内容 |
 | --- | --- | --- |
-| `--tests <DIR>` | なし | テストファイルを置いたディレクトリ |
-| `--prop-tests <DIR>` | なし | proptest を使った property test を置いたディレクトリ |
-| `--timeout-secs <N>` | 60 | 各ステージのタイムアウト秒数 |
-| `--out <FILE>` | 標準出力 | レポートの出力先 |
+| `--tests <TESTS>` | なし | テストファイルを置いたディレクトリ |
+| `--prop-tests <PROP_TESTS>` | なし | proptest を使った property test を置いたディレクトリ |
+| `--timeout-secs <TIMEOUT_SECS>` | 60 | 各ステージのタイムアウト秒数 |
+| `--out <OUT>` | 標準出力 | レポートの出力先 |
 | `--format <FORMAT>` | `markdown` | `markdown` / `json` / `html` |
-| `--config <FILE>` | `./safecode.toml` があれば使用 | 採点ルーブリックの設定ファイル |
-| `--db <FILE>` | なし | 評価結果を保存する SQLite DB。指定すると過去 run との回帰を検出する |
-| `--regression-threshold <X>` | 1 | 回帰と判定する点数の下落幅（0 以上の有限値） |
-| `--wasm-entry <NAME>` | なし | Wasm サンドボックスで実行するエントリ関数名（引数なしの `pub fn`）。指定すると `wasm32-wasip1` にビルドして隔離実行する |
-| `--wasm-fuel <N>` | 100000000 | Wasm 実行の fuel 上限（命令数） |
-| `--wasm-max-memory-mb <N>` | 64 | Wasm 実行のメモリ上限（MB、1〜4096） |
+| `--config <CONFIG>` | `./safecode.toml` があれば使用 | 採点ルーブリックの設定ファイル |
+| `--db <DB>` | なし | 評価結果を保存する SQLite DB。指定すると過去 run との回帰を検出する |
+| `--regression-threshold <REGRESSION_THRESHOLD>` | 1 | 回帰と判定する点数の下落幅（0 以上の有限値） |
+| `--wasm-entry <WASM_ENTRY>` | なし | Wasm サンドボックスで実行するエントリ関数名（引数なしの `pub fn`）。指定すると `wasm32-wasip1` にビルドして隔離実行する |
+| `--wasm-fuel <WASM_FUEL>` | 100000000 | Wasm 実行の fuel 上限（命令数） |
+| `--wasm-max-memory-mb <WASM_MAX_MEMORY_MB>` | 64 | Wasm 実行のメモリ上限（MB、1〜4096） |
 | `--mutation` | off | ミューテーションテストを実行する。ツールが PATH に無ければ Skipped |
-| `--llm-review` | off | LLM セマンティックレビューを実行し reasoning 軸を採点する |
+| `--llm-review` | off | LLM セマンティックレビューを実行する。点数に入るのは `safecode.toml` で `reasoning` の重みを正にしたときだけ（既定は 0） |
 
 ### `safecode generate [OPTIONS] <SPEC>`
 
@@ -113,14 +113,14 @@ safecode evaluate cand_a.rs cand_b.rs cand_c.rs --tests tests/ --out report.md
 
 | オプション | 既定値 | 内容 |
 | --- | --- | --- |
-| `--candidates <N>` | 3 | 生成する候補数（1〜8） |
-| `--timeout-secs <N>` | 30 | 評価ステージのタイムアウト秒数 |
-| `--llm-timeout-secs <N>` | 120 | LLM 呼び出しのタイムアウト秒数 |
-| `--out <FILE>` | 標準出力 | レポートの出力先 |
+| `--candidates <CANDIDATES>` | 3 | 生成する候補数（1〜8） |
+| `--timeout-secs <TIMEOUT_SECS>` | 30 | 評価ステージのタイムアウト秒数 |
+| `--llm-timeout-secs <LLM_TIMEOUT_SECS>` | 120 | LLM 呼び出しのタイムアウト秒数 |
+| `--out <OUT>` | 標準出力 | レポートの出力先 |
 | `--format <FORMAT>` | `markdown` | `markdown` / `json` / `html` |
-| `--config <FILE>` | `./safecode.toml` があれば使用 | 採点ルーブリックの設定ファイル |
+| `--config <CONFIG>` | `./safecode.toml` があれば使用 | 採点ルーブリックの設定ファイル |
 
-### `safecode history --db <FILE>`
+### `safecode history --db <DB>`
 
 保存済みの run 履歴を一覧表示する。`--db` は必須。
 
@@ -138,7 +138,7 @@ safecode evaluate cand_a.rs cand_b.rs cand_c.rs --tests tests/ --out report.md
 
 ### 設定ファイル（`safecode.toml`）
 
-`[weights]` に 5 軸（`correctness` `security` `performance` `maintainability` `resource_usage`）と任意の `reasoning` を書く。`[weights.rust]` `[weights.python]` `[weights.go]` `[weights.javascript]` `[weights.typescript]` で言語別に上書きできる。未知のキー、有限でない値、負の値はエラーになる（`src/config.rs`）。
+`[weights]` に 5 軸（`correctness` `security` `performance` `maintainability` `resource_usage`）と任意の `reasoning`（既定 0。正の値にすると `--llm-review` の結果が点数に入る）を書く。`[weights.rust]` `[weights.python]` `[weights.go]` `[weights.javascript]` `[weights.typescript]` で言語別に上書きできる。未知のキー、有限でない値、負の値はエラーになる（`src/config.rs`）。
 
 ### 終了コード
 
