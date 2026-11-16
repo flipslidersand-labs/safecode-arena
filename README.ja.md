@@ -75,7 +75,7 @@ safecode generate myspec.md --candidates 5 --out report.md --format json
 | performance     | 15   | `bench_ns`（Criterion）を優先。無ければ候補間 compile+test 時間の相対比較                  |
 | maintainability | 10   | 関数長ヒューリスティック 60% + clippy 40%                                                  |
 | resource_usage  | 5    | Wasm サンドボックス（wasm32-wasip1）実行の成否                                             |
-| reasoning       | —    | LLM セマンティックレビューの点数（`--llm-review` で有効）                                  |
+| reasoning       | —    | LLM セマンティックレビューの点数（`--llm-review` を付け、`[weights]` の `reasoning` を正にしたとき。既定の重みは 0） |
 
 重みは `safecode.toml` の `[weights]` で上書きできる。
 
