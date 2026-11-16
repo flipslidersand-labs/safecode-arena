@@ -25,4 +25,4 @@ cargo fmt
 
 - `AGENTS.md`（人だけが更新する）。
 - `.github/workflows/` の reusable workflow の固定 SHA と `runs-on`。変更するときは単独の PR にし、人がマージする。
-- `examples/broken.rs` と `examples/buggy.rs` を「直す」こと。失敗する候補としてテストとドキュメントが参照している。
+- `examples/broken.rs` と `examples/buggy.rs` を「直す」こと。失敗する候補のサンプルで、`buggy.rs` は `.github/workflows/eval.yml` の評価対象になっている。
