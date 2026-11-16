@@ -4,8 +4,8 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 No version has been tagged or released yet (`Cargo.toml` declares `0.1.0`), so everything is listed under `Unreleased`.
-Entries are the titles of merged `feat` / `fix` pull requests, oldest first. Refactors, tests, docs, CI and dependency updates are not listed.
-The first features were committed directly, before pull requests were used; those entries are commit subjects and carry no link.
+Entries are the titles of merged pull requests whose type is `feat` or `fix`, oldest first. Pull requests of other types (`refactor`, `test`, `docs`, `ci`, `chore`, dependency updates) are not listed.
+The first features were committed directly, before pull requests were used; those entries are summarized from the commit subjects and carry no link.
 
 ## [Unreleased]
 
