@@ -88,7 +88,9 @@ export SAFECODE_LLM_BACKEND=ollama
 safecode evaluate candidate.rs --llm-review
 ```
 
-`generate` が作る候補は Rust である。環境変数の一覧は [spec.md](spec.md) を参照。
+`--llm-review` は LLM を呼ぶだけで、既定では点数に入らない（`reasoning` の重みの既定が 0 のため）。点数に入れるには `safecode.toml` の `[weights]` に `reasoning = 10` のように正の値を書く。
+
+`generate` が作る候補は Rust である。`generate` は候補を生成して compile / test / lint で採点するだけで、`--tests`・`--db`・Wasm・mutation・LLM レビューは通らない。環境変数の一覧は [spec.md](spec.md) を参照。
 
 ### 重みを変える（未検証）
 
@@ -101,6 +103,7 @@ security = 20
 performance = 15
 maintainability = 10
 resource_usage = 5
+# reasoning = 10   # --llm-review の結果を点数に入れるとき（既定 0）
 
 # 言語別の上書き（任意）
 [weights.go]
@@ -118,9 +121,11 @@ resource_usage = 5
 | `Error: 候補ファイルを 1 つ以上指定してください`（終了コード 1） | `evaluate` に候補ファイルを渡していない |
 | `No such file or directory`（終了コード 1） | 候補のパスが違う。`examples/` の例はリポのルートから実行する |
 | `未対応の拡張子` | 対応は `.rs` `.py` `.go` `.js` `.ts`。拡張子で言語を決めている |
-| lint / mutation の列が `skipped` | そのツール（`ruff`、`staticcheck`、`eslint`、`cargo-mutants` など）が PATH に無い。入れると採点に入る |
-| ステージが `timed out` | `--timeout-secs` を延ばす（`evaluate` の既定は 60 秒、`generate` は 30 秒） |
-| `--llm-review` を付けても reasoning が `Skipped` | `ANTHROPIC_API_KEY` が未設定、または LLM から有効な応答が返らなかった。その候補は reasoning を採点しない |
+| lint / mutation の列が `— skipped` | そのツール（`ruff`、`eslint`、`cargo-mutants`、`mutmut`、`gremlins`）が PATH に無い。入れると採点に入る。Go は `staticcheck` が無ければ `go vet` で代用するので skipped にならない |
+| TypeScript 候補の全ステージが `— skipped` | `tsc` が PATH に無い。compile も test も実行されない |
+| `cargo-audit` を入れたら security が下がった | 未導入のときは脆弱性 0 件扱いで audit 項（20%）が満点になる。入れると実際の件数で採点する |
+| ステージのセルが `⏱ timeout(60000ms)` のように出る | `--timeout-secs` を延ばす（`evaluate` の既定は 60 秒、`generate` は 30 秒） |
+| `--llm-review` を付けても点数が変わらない | (1) `reasoning` の重みが 0（既定）。(2) `ANTHROPIC_API_KEY` が未設定、または LLM から有効な応答が返らなかった。Markdown / HTML レポートに reasoning の列は無いので、`--format json` の `reasoning` が `Skipped` かどうかで見分ける |
 | `--db` 付きの実行が終了コード 1 で終わる | 回帰の検出。標準エラーに下がった候補が出る。意図した変更なら別の DB ファイルで取り直す |
 | `safecode.toml` の読み込みエラー | 未知のキーと、有限でない値・負の値は拒否する |
 | `cargo test` が失敗する（開発時） | `cargo test --lib --tests` を使う。`examples/` は評価用の候補で、Cargo の example としてはビルドできない |
