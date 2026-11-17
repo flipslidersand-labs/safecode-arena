@@ -63,11 +63,11 @@ safecode generate myspec.md --candidates 5 --out report.md --format json
 | Axis            | Weight | How it's computed                                                                       |
 | --------------- | ------ | --------------------------------------------------------------------------------------- |
 | correctness     | 50     | compile 40% + tests 40% + prop tests 20% (with `--mutation`: 30% + 30% + 15% + 25% mut) |
-| security        | 20     | `unsafe` heuristics 40% + clippy/lint 30% + `cargo audit` 30%                          |
+| security        | 20     | `unsafe` heuristics 40% + clippy/lint 40% + `cargo audit` 20%                          |
 | performance     | 15     | `bench_ns` (Criterion) preferred; falls back to relative compile+test time              |
 | maintainability | 10     | function-length heuristics 60% + clippy 40%                                             |
 | resource_usage  | 5      | pass/fail of sandboxed Wasm (wasm32-wasip1) execution                                   |
-| reasoning       | —      | LLM semantic review score (enabled with `--llm-review`, `SAFECODE_LLM_BACKEND`)         |
+| reasoning       | —      | LLM semantic review score (needs `--llm-review` and a positive `reasoning` weight; default weight is 0) |
 
 Weights can be overridden via `[weights]` in `safecode.toml`.
 
@@ -81,24 +81,33 @@ Weights can be overridden via `[weights]` in `safecode.toml`.
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama API endpoint |
 | `OLLAMA_MODEL` | `qwen2.5-coder:7b` | Ollama model for code generation/review |
 
+### CI configuration (required)
+
+The workflows that use `runs-on: ${{ vars.GATE_RUNNER }}` (`eval.yml`, `ignored-tests.yml`) have no default runner. Set the repository or organization variable `GATE_RUNNER` to a runner label. If it is unset, these jobs cannot be assigned a runner and will not complete (they fail or stay queued).
+
 ## Development
 
 ```bash
 cargo build
-cargo test
-cargo clippy -- -D warnings
+cargo test --lib --tests      # plain `cargo test` fails: examples/ holds sample candidates, not Cargo examples
+cargo clippy --lib --tests --bins -- -D warnings
 cargo fmt
 ```
 
 ## Documentation (Japanese)
 
-- [Spec](docs/spec.md)
+- [Spec and CLI reference](docs/spec.md)
+- [Manual](docs/manual.md)
+- [Design](docs/design.md)
 - [Tech stack](docs/tech-stack.md)
 - [Data model](docs/data-model.md)
 - [Implementation guide](docs/implementation-guide.md)
 - [ADRs](docs/adr/)
+- [Changelog](CHANGELOG.md)
 
 ## Status
+
+Current version: `0.1.0` (not tagged or released yet). Recent changes are listed in the [changelog](CHANGELOG.md).
 
 ✅ Phases 1–15 complete. All scoring axes measured. SQLite persistence + regression detection. Wasm sandbox. **Multi-language**: Rust / Python / Go / JavaScript / TypeScript auto-detected by extension. **Mutation testing**: Rust (`cargo-mutants`), Python (`mutmut`), Go (`gremlins`) integrated and weight-aware. **Criterion benchmarks** integrated for performance axis. **LLM semantic review** (Claude/Ollama) for reasoning axis. **`generate` command**: produce N candidates from a natural-language spec and rank them automatically. GitHub Actions CI with regression detection.
 
