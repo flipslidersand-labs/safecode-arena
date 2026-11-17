@@ -717,14 +717,13 @@ fn run_python_stages(
             .arg("ruff check --ignore-noqa --output-format=concise candidate.py 1>&2; true")
             .current_dir(root);
         let (outcome, out, truncated) = runner::run_stage_capture_flagged("ruff", l, timeout);
-        if ruff_run_failed(&out) {
-            (StageOutcome::Skipped, 0)
-        } else {
-            (
-                outcome,
-                floor_if_truncated(count_ruff_findings(&out), truncated),
-            )
-        }
+        lint_outcome(
+            outcome,
+            &out,
+            truncated,
+            ruff_run_failed,
+            count_ruff_findings,
+        )
     } else {
         (StageOutcome::Skipped, 0)
     };
@@ -904,26 +903,24 @@ fn run_go_stages(
             .current_dir(root);
         let (outcome, out, truncated) =
             runner::run_stage_capture_flagged("staticcheck", l, timeout);
-        if go_lint_run_failed(&out) {
-            (StageOutcome::Skipped, 0)
-        } else {
-            (
-                outcome,
-                floor_if_truncated(count_staticcheck_findings(&out), truncated),
-            )
-        }
+        lint_outcome(
+            outcome,
+            &out,
+            truncated,
+            go_lint_run_failed,
+            count_staticcheck_findings,
+        )
     } else {
         let mut l = Command::new("sh");
         l.arg("-c").arg("go vet ./... 1>&2; true").current_dir(root);
         let (outcome, out, truncated) = runner::run_stage_capture_flagged("go-vet", l, timeout);
-        if go_lint_run_failed(&out) {
-            (StageOutcome::Skipped, 0)
-        } else {
-            (
-                outcome,
-                floor_if_truncated(count_go_vet_findings(&out), truncated),
-            )
-        }
+        lint_outcome(
+            outcome,
+            &out,
+            truncated,
+            go_lint_run_failed,
+            count_go_vet_findings,
+        )
     };
 
     let (mutation, mutation_caught, mutation_total) = if run_mutation && test.is_passed() {
@@ -1112,15 +1109,13 @@ fn run_js_stages(
             .arg(eslint_cmd("candidate.js"))
             .current_dir(root);
         let (outcome, out, truncated) = runner::run_stage_capture_flagged("eslint", l, timeout);
-        if eslint_run_failed(&out) {
-            // 実行失敗を「指摘 0 件」にしない (#152)
-            (StageOutcome::Skipped, 0)
-        } else {
-            (
-                outcome,
-                floor_if_truncated(count_eslint_findings(&out), truncated),
-            )
-        }
+        lint_outcome(
+            outcome,
+            &out,
+            truncated,
+            eslint_run_failed,
+            count_eslint_findings,
+        )
     } else {
         (StageOutcome::Skipped, 0)
     };
@@ -1198,15 +1193,13 @@ fn run_ts_stages(
             .arg(eslint_cmd("candidate.ts"))
             .current_dir(root);
         let (outcome, out, truncated) = runner::run_stage_capture_flagged("eslint", l, timeout);
-        if eslint_run_failed(&out) {
-            // 実行失敗を「指摘 0 件」にしない (#152)
-            (StageOutcome::Skipped, 0)
-        } else {
-            (
-                outcome,
-                floor_if_truncated(count_eslint_findings(&out), truncated),
-            )
-        }
+        lint_outcome(
+            outcome,
+            &out,
+            truncated,
+            eslint_run_failed,
+            count_eslint_findings,
+        )
     } else {
         (StageOutcome::Skipped, 0)
     };
@@ -1283,7 +1276,7 @@ fn run_bench_stage(root: &Path, timeout: Duration) -> Option<u64> {
 ///
 /// 切り詰め後の出力で数えると過少になり、大量の警告を出すほど得をしてしまう。
 /// 警告過多とみなし、security / maintainability の係数が 0 になる値へ引き上げる。
-const TRUNCATED_LINT_FLOOR: usize = 1000;
+pub(crate) const TRUNCATED_LINT_FLOOR: usize = 1000;
 
 /// 切り詰めが発生していれば件数を `TRUNCATED_LINT_FLOOR` 以上にする。
 fn floor_if_truncated(count: usize, truncated: bool) -> usize {
@@ -1291,6 +1284,24 @@ fn floor_if_truncated(count: usize, truncated: bool) -> usize {
         count.max(TRUNCATED_LINT_FLOOR)
     } else {
         count
+    }
+}
+
+/// run_failed 判定と件数から lint の (結果, 件数) を決める。
+///
+/// 切り詰め時は出力の先頭/末尾だけを見た `run_failed` 判定を信用しない
+/// (": not found" を混ぜて Skipped=係数 1.0 にされるのを防ぐ)。
+fn lint_outcome(
+    outcome: StageOutcome,
+    out: &str,
+    truncated: bool,
+    run_failed: fn(&str) -> bool,
+    count: fn(&str) -> usize,
+) -> (StageOutcome, usize) {
+    if !truncated && run_failed(out) {
+        (StageOutcome::Skipped, 0)
+    } else {
+        (outcome, floor_if_truncated(count(out), truncated))
     }
 }
 
@@ -2509,6 +2520,29 @@ mod truncated_lint_tests {
         // 床値で security / maintainability の係数が 0 になる(scoring.rs の閾値 30 件以上)。
         let floored = floor_if_truncated(0, true);
         assert!(floored >= 30, "床値が採点の閾値未満: {floored}");
+    }
+
+    /// head/tail に ": not found" を含む切り詰め出力でも lint が最低点になる。
+    #[test]
+    fn truncated_output_with_not_found_still_scores_zero() {
+        use crate::model::StageOutcome;
+        let out = "sh: 1: ruff: not found\nsh: staticcheck: command not found\n";
+        assert!(ruff_run_failed(out));
+        let passed = StageOutcome::Passed { duration_ms: 1 };
+        let (lint, n) = lint_outcome(
+            passed.clone(),
+            out,
+            true,
+            ruff_run_failed,
+            count_ruff_findings,
+        );
+        assert!(matches!(lint, StageOutcome::Passed { .. }), "{lint:?}");
+        assert_eq!(crate::scoring::lint_security_ratio(&lint, n), 0.0);
+        assert_eq!(crate::scoring::lint_maintainability_ratio(n), 0.0);
+        // 切り詰めなしなら従来どおり Skipped。
+        let (lint, n) = lint_outcome(passed, out, false, ruff_run_failed, count_ruff_findings);
+        assert!(matches!(lint, StageOutcome::Skipped));
+        assert_eq!(n, 0);
     }
 }
 
