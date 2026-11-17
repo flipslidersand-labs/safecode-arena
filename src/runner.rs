@@ -288,8 +288,10 @@ fn run_stage_capture_with(
         Ok(Some(status)) => {
             let elapsed = start.elapsed();
             // 子が自分で終了しても、裏に残した孫がいればグループごと止める。
-            // 回収済みでも安全: グループに生存者がいる間は pgid(=旧 pid)は再利用されず、
-            // 生存者がいなければ killpg は ESRCH で何もしない。kill/wait は回収済みなら無害。
+            // 回収後の killpg: グループに生存者がいる間は pgid(=旧 pid)は再利用されず、
+            // 生存者がいなければ ESRCH で何もしない。回収から killpg までの間に pid が一周して
+            // 別のグループリーダーに再利用される窓は理論上残る(実害はほぼ無いと判断)。
+            // 続く kill/wait は、回収済みの子には std がシグナルを送らないので無害。
             // setsid で別セッションへ逃げたプロセスは止められない(対象外)。
             kill_group(&mut child);
             if status.success() {
