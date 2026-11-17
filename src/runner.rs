@@ -398,11 +398,17 @@ mod tests {
     fn explicit_env_overrides_parent_value() {
         // HOME は親にも存在するはず。明示値が後勝ちで親値を上書きする。
         // 親の環境は変更しない。
+        // 親の HOME と確実に異なる値を選ぶ。
+        let parent = std::env::var("HOME").unwrap_or_default();
+        let explicit = if parent == "/explicit/home" {
+            "/explicit/home2"
+        } else {
+            "/explicit/home"
+        };
         let mut cmd = Command::new("sh");
-        cmd.env("HOME", "/explicit/home")
-            .args(["-c", "echo h=$HOME"]);
+        cmd.env("HOME", explicit).args(["-c", "echo h=$HOME"]);
         let captured = run_sh_echo(cmd);
-        assert!(captured.contains("h=/explicit/home"), "{captured}");
+        assert!(captured.contains(&format!("h={explicit}")), "{captured}");
     }
 
     #[test]
@@ -433,12 +439,18 @@ mod tests {
     #[test]
     fn non_utf8_env_name_is_dropped() {
         use std::os::unix::ffi::OsStrExt;
+        // sh(dash)は非 UTF-8 名を自分で捨てるため、env を直接実行して検証する。
         let name = std::ffi::OsStr::from_bytes(b"LC_\xff");
-        let mut cmd = Command::new("sh");
+        let mut cmd = Command::new("env");
         cmd.env(name, "leak")
-            .args(["-c", "env | grep -c leak; true"]);
+            .env("CARGO_TARGET_DIR", "/explicit/target");
         let captured = run_sh_echo(cmd);
-        assert!(captured.trim().starts_with('0'), "{captured}");
+        // 正のコントロール: 許可名の明示値は env の出力に出る。
+        assert!(
+            captured.contains("CARGO_TARGET_DIR=/explicit/target"),
+            "{captured}"
+        );
+        assert!(!captured.contains("leak"), "{captured}");
     }
 
     #[test]
