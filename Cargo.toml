@@ -22,7 +22,6 @@ serde_json = "1"
 toml = "0.9"
 # エラー処理
 anyhow = "1"
-thiserror = "2"
 # サンドボックス実行（一時ディレクトリ・プロセス制御）
 tempfile = "3"
 # 子プロセスのタイムアウト kill
@@ -30,7 +29,7 @@ wait-timeout = "0.2"
 # タイムアウト時のプロセスグループ kill（killpg）。既に lock に入っている推移依存
 libc = "0.2"
 # タイムスタンプ（レポート生成）
-chrono = { version = "0.4", features = ["serde"] }
+chrono = "0.4"
 # 評価結果の永続化（run 履歴・リグレッション検出）。bundled で system sqlite 非依存。
 rusqlite = { version = "0.41", features = ["bundled"] }
 wasmtime = "46.0.0"
@@ -39,7 +38,6 @@ wasmtime-wasi = "46.0.0"
 ureq = { version = "2", features = ["json"] }
 
 # --- 発展フェーズ用（未使用。Phase が進んだら有効化） ---
-# wasmtime = "29"        # WASI サンドボックス
 # tree-sitter = "0.24"   # AST 解析・コード類似度
 
 [dev-dependencies]
