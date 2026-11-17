@@ -11,7 +11,7 @@ Phase 5（発展）として Rust 以外の言語（まず Python）を検証対
 
 ## 決定
 
-ファイル拡張子から言語を判定し（`Language::from_extension`、`.py` → Python）、言語ごとのステージランナーに分岐する。
+ファイル拡張子から言語を判定し（`Language::try_from_extension`、`py` → Python）、言語ごとのステージランナーに分岐する。
 
 - 共通の中間表現 `StageResults`（compile / test / lint / lint_warnings / prop_test / wasm）を各ランナーが埋め、`assemble` が言語非依存に採点する。
 - **Rust** (`run_rust_stages`): 既存どおり Cargo プロジェクト + clippy + proptest + wasm。

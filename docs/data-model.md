@@ -10,7 +10,7 @@
 
 ```rust
 enum Language { Rust, Python /* 発展: Go, JavaScript */ }
-// from_extension(".py") → Python, それ以外 → Rust
+// try_from_extension("py") → Some(Python), 未知の拡張子 → None
 ```
 
 ### `Candidate`
