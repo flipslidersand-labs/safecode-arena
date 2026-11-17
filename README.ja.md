@@ -56,6 +56,10 @@ safecode evaluate cand.rs cand.py    # 言語横断で 1 回比較
 
 重みは `safecode.toml` の `[weights]` で上書きできる。
 
+### CI の必須設定
+
+`runs-on: ${{ vars.GATE_RUNNER }}` を使う workflow（`eval.yml`・`ignored-tests.yml`）には既定の runner がありません。リポジトリまたは organization の変数 `GATE_RUNNER` に runner ラベルを設定してください。未設定の場合、これらのジョブは runner を割り当てられず完了しません（失敗するか、待機したままになります）。
+
 ## 開発
 
 ```bash
