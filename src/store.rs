@@ -38,19 +38,41 @@ impl Regression {
 
 /// run 間比較に使うスコア。performance（相対評価）と reasoning（LLM レビュー。
 /// 一時的な API 失敗で 0 点になり偽の下落になる）を除いた軸の合計。
-/// 加算順は `comparable_from_detail` と同じにする（合計から引くと最終ビットがずれ、
-/// 同じ軸でも保存済みの値と一致しなくなる）。
+/// 保存済み行の計算（`comparable_from_detail`）もこの関数を呼ぶ。加算順は左結合で固定
+/// （合計から引くと最終ビットがずれ、保存済みの値と一致しなくなる）。
 pub fn comparable_score(axes: &AxisScores) -> f64 {
     axes.correctness + axes.security + axes.maintainability + axes.resource_usage
 }
 
-/// 保存済み detail_json から比較用スコアを計算する。
+/// detail_json から比較に必要な部分だけを読む形。軸が欠けた古い行は 0 扱い（互換維持）。
+/// 軸名は `AxisScores` と一致させる（改名の検知はテスト
+/// `comparable_from_detail_matches_saved_evaluation` が担う）。
+#[derive(serde::Deserialize)]
+struct DetailForCompare {
+    axes: Option<DetailAxes>,
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct DetailAxes {
+    correctness: f64,
+    security: f64,
+    maintainability: f64,
+    resource_usage: f64,
+}
+
+/// 保存済み detail_json から比較用スコアを計算する（計算は `comparable_score` に集約）。
 /// `axes` を持たない古い行は計算不能として None（比較対象外）。
 fn comparable_from_detail(detail_json: &str) -> Option<f64> {
-    let v: serde_json::Value = serde_json::from_str(detail_json).ok()?;
-    let axes = v.get("axes")?.as_object()?;
-    let get = |k: &str| axes.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0);
-    Some(get("correctness") + get("security") + get("maintainability") + get("resource_usage"))
+    let d: DetailForCompare = serde_json::from_str(detail_json).ok()?;
+    let a = d.axes?;
+    Some(comparable_score(&AxisScores {
+        correctness: a.correctness,
+        security: a.security,
+        maintainability: a.maintainability,
+        resource_usage: a.resource_usage,
+        ..AxisScores::default()
+    }))
 }
 
 /// SQLite を裏に持つ評価ストア。
@@ -452,6 +474,24 @@ mod tests {
     fn comparable_from_detail_ignores_reasoning() {
         let json = r#"{"axes":{"correctness":10,"security":5,"maintainability":3,"resource_usage":2,"performance":9,"reasoning":20}}"#;
         assert_eq!(comparable_from_detail(json), Some(20.0));
+    }
+
+    #[test]
+    fn comparable_from_detail_matches_saved_evaluation() {
+        // 軸名を model.rs で変えると、保存 JSON から読む値が 0 扱いになり不一致で落ちる
+        let mut e = eval_axes("a", 60.0, 0.0);
+        e.axes.correctness = 11.0;
+        e.axes.security = 7.0;
+        e.axes.maintainability = 5.0;
+        e.axes.resource_usage = 3.0;
+        e.axes.performance = 2.0;
+        e.axes.reasoning = 13.0;
+        let json = serde_json::to_string(&e).unwrap();
+        assert_eq!(comparable_from_detail(&json), Some(26.0));
+        assert_eq!(
+            comparable_from_detail(&json),
+            Some(comparable_score(&e.axes))
+        );
     }
 
     #[test]
