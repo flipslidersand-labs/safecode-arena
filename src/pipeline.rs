@@ -622,13 +622,7 @@ fn run_rust_stages(
 /// - タイムアウトは test ステージの 3 倍を目安として渡す（ミュータント数に比例するため）。
 fn run_rust_mutation(root: &Path, timeout: Duration) -> (StageOutcome, usize, usize) {
     // cargo mutants が利用可能か確認
-    let mutants_available = std::process::Command::new("cargo")
-        .args(["mutants", "--version"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+    let mutants_available = tool_available("cargo", &["mutants", "--version"]);
     if !mutants_available {
         return (StageOutcome::Skipped, 0, 0);
     }
@@ -755,13 +749,7 @@ fn run_python_stages(
 
 /// Python 候補に mutmut でミューテーションテストを実行する。
 fn run_python_mutation(root: &Path, timeout: Duration) -> (StageOutcome, usize, usize) {
-    let mutmut_available = std::process::Command::new("mutmut")
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+    let mutmut_available = tool_available("mutmut", &["--version"]);
     if !mutmut_available {
         return (StageOutcome::Skipped, 0, 0);
     }
@@ -798,22 +786,27 @@ fn parse_mutmut_json(stdout: &str) -> Option<(usize, usize)> {
     None
 }
 
+/// `cmd args...` を実行して成功終了するかでツールの有無を判定する。
+///
+/// 起動失敗（PATH にない等）・非 0 終了は false。stdout/stderr は捨てる。
+fn tool_available(cmd: &str, args: &[&str]) -> bool {
+    std::process::Command::new(cmd)
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 /// `staticcheck` が PATH に存在するか確認する。
 fn staticcheck_available() -> bool {
-    std::process::Command::new("staticcheck")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    tool_available("staticcheck", &["--version"])
 }
 
 /// `eslint` が PATH に存在するか確認する。
 fn eslint_available() -> bool {
-    std::process::Command::new("eslint")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    tool_available("eslint", &["--version"])
 }
 
 /// ESLint の出力が「実行失敗」(設定なし・未知オプション・フォーマッタ欠落)を示すか判定する純関数。
@@ -848,11 +841,7 @@ fn eslint_cmd(file: &str) -> String {
 
 /// `ruff` が PATH に存在するか確認する。
 fn ruff_available() -> bool {
-    std::process::Command::new("ruff")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    tool_available("ruff", &["--version"])
 }
 
 /// ruff の出力が「実行失敗」(コマンド不在・設定ファイル不正などの異常終了)を示すか判定する純関数 (#158)。
@@ -958,13 +947,7 @@ fn run_go_stages(
 ///
 /// - `gremlins` が PATH にない場合は `(Skipped, 0, 0)` を返す（減点なし）。
 fn run_go_mutation(root: &Path, timeout: Duration) -> (StageOutcome, usize, usize) {
-    let gremlins_available = std::process::Command::new("gremlins")
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+    let gremlins_available = tool_available("gremlins", &["--version"]);
     if !gremlins_available {
         return (StageOutcome::Skipped, 0, 0);
     }
@@ -1152,13 +1135,7 @@ fn run_js_stages(
 
 /// `tsc` が PATH に存在するか確認する。
 fn tsc_available() -> bool {
-    std::process::Command::new("tsc")
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    tool_available("tsc", &["--version"])
 }
 
 /// TypeScript 候補: tsc --noEmit（型検査）→ tsc + node --test（テスト）→ ESLint（あれば）。
@@ -1248,13 +1225,7 @@ fn run_ts_stages(
 /// - 実行したが JSON が得られない（タイムアウト・起動失敗・RustSec DB 取得エラー）場合は
 ///   `None`（audit 不能）。脆弱性検出時も exit 1 だが JSON は出るため exit code でなく JSON 可否で判定する。
 fn run_cargo_audit(root: &Path, timeout: Duration) -> Option<usize> {
-    let audit_available = std::process::Command::new("cargo")
-        .args(["audit", "--version"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+    let audit_available = tool_available("cargo", &["audit", "--version"]);
     if !audit_available {
         return Some(0);
     }
@@ -2537,5 +2508,23 @@ mod truncated_lint_tests {
         // 床値で security / maintainability の係数が 0 になる(scoring.rs の閾値 30 件以上)。
         let floored = floor_if_truncated(0, true);
         assert!(floored >= 30, "床値が採点の閾値未満: {floored}");
+    }
+}
+
+#[cfg(test)]
+mod tool_available_tests {
+    use super::tool_available;
+
+    #[test]
+    fn existing_command_with_success_exit_is_available() {
+        assert!(tool_available("sh", &["-c", "exit 0"]));
+    }
+
+    #[test]
+    fn missing_command_is_not_available() {
+        assert!(!tool_available(
+            "definitely-not-a-real-tool-xyz",
+            &["--version"]
+        ));
     }
 }
