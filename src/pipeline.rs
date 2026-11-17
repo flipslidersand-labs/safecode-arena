@@ -788,10 +788,11 @@ fn parse_mutmut_json(stdout: &str) -> Option<(usize, usize)> {
 
 /// `cmd args...` を実行して成功終了するかでツールの有無を判定する。
 ///
-/// 起動失敗（PATH にない等）・非 0 終了は false。stdout/stderr は捨てる。
+/// 起動失敗（PATH にない等）・非 0 終了は false。stdin/stdout/stderr は使わない。
 fn tool_available(cmd: &str, args: &[&str]) -> bool {
     std::process::Command::new(cmd)
         .args(args)
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
