@@ -378,6 +378,81 @@ mod tests {
         assert!(captured.contains("path=set"), "{captured}");
     }
 
+    fn run_sh_echo(cmd: Command) -> String {
+        let (outcome, captured) = run_stage_capture("env", cmd, Duration::from_secs(5));
+        assert!(outcome.is_passed(), "{captured}");
+        captured
+    }
+
+    #[test]
+    fn explicit_allowlisted_env_reaches_child() {
+        // パイプラインが CARGO_TARGET_DIR を明示設定しても子に届く。
+        let mut cmd = Command::new("sh");
+        cmd.env("CARGO_TARGET_DIR", "/explicit/target")
+            .args(["-c", "echo v=${CARGO_TARGET_DIR:-unset}"]);
+        let captured = run_sh_echo(cmd);
+        assert!(captured.contains("v=/explicit/target"), "{captured}");
+    }
+
+    #[test]
+    fn explicit_env_overrides_parent_value() {
+        // HOME は親にも存在するはず。明示値が後勝ちで親値を上書きする。
+        // 親の環境は変更しない。
+        // 親の HOME と確実に異なる値を選ぶ。
+        let parent = std::env::var("HOME").unwrap_or_default();
+        let explicit = if parent == "/explicit/home" {
+            "/explicit/home2"
+        } else {
+            "/explicit/home"
+        };
+        let mut cmd = Command::new("sh");
+        cmd.env("HOME", explicit).args(["-c", "echo h=$HOME"]);
+        let captured = run_sh_echo(cmd);
+        assert!(captured.contains(&format!("h={explicit}")), "{captured}");
+    }
+
+    #[test]
+    fn env_remove_of_allowlisted_name_gets_parent_value_back() {
+        // 現仕様の固定: env_remove しても許可名なら親の値が入り直す(親に無ければ unset)。
+        let expected = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "unset".into());
+        let mut cmd = Command::new("sh");
+        cmd.env("CARGO_TARGET_DIR", "/explicit/target")
+            .env_remove("CARGO_TARGET_DIR")
+            .args(["-c", "echo v=${CARGO_TARGET_DIR:-unset}"]);
+        let captured = run_sh_echo(cmd);
+        assert!(captured.contains(&format!("v={expected}")), "{captured}");
+        assert!(!captured.contains("/explicit/target"), "{captured}");
+    }
+
+    #[test]
+    fn explicit_lc_prefixed_env_passes_but_similar_prefix_does_not() {
+        let mut cmd = Command::new("sh");
+        cmd.env("LC_ALL", "C")
+            .env("LCX_FOO", "leak")
+            .args(["-c", "echo a=${LC_ALL:-unset} b=${LCX_FOO:-unset}"]);
+        let captured = run_sh_echo(cmd);
+        assert!(captured.contains("a=C"), "{captured}");
+        assert!(captured.contains("b=unset"), "{captured}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_env_name_is_dropped() {
+        use std::os::unix::ffi::OsStrExt;
+        // sh(dash)は非 UTF-8 名を自分で捨てるため、env を直接実行して検証する。
+        let name = std::ffi::OsStr::from_bytes(b"LC_\xff");
+        let mut cmd = Command::new("env");
+        cmd.env(name, "leak")
+            .env("CARGO_TARGET_DIR", "/explicit/target");
+        let captured = run_sh_echo(cmd);
+        // 正のコントロール: 許可名の明示値は env の出力に出る。
+        assert!(
+            captured.contains("CARGO_TARGET_DIR=/explicit/target"),
+            "{captured}"
+        );
+        assert!(!captured.contains("leak"), "{captured}");
+    }
+
     #[test]
     fn long_command_times_out_and_is_killed() {
         let mut cmd = Command::new("sleep");
