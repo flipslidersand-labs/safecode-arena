@@ -38,8 +38,10 @@ impl Regression {
 
 /// run 間比較に使うスコア。performance（相対評価）と reasoning（LLM レビュー。
 /// 一時的な API 失敗で 0 点になり偽の下落になる）を除いた軸の合計。
+/// 加算順は `comparable_from_detail` と同じにする（合計から引くと最終ビットがずれ、
+/// 同じ軸でも保存済みの値と一致しなくなる）。
 pub fn comparable_score(axes: &AxisScores) -> f64 {
-    axes.total() - axes.performance - axes.reasoning
+    axes.correctness + axes.security + axes.maintainability + axes.resource_usage
 }
 
 /// 保存済み detail_json から比較用スコアを計算する。
@@ -344,6 +346,28 @@ mod tests {
         prev.insert("a".to_string(), 85.0);
         let curr = vec![eval("a", 84.9)];
         assert_eq!(find_regressions(&prev, &curr, 0.0).len(), 1);
+    }
+
+    #[test]
+    fn zero_threshold_ignores_rounding_when_only_performance_changes() {
+        // 保存側（軸の直接和）と現在側の加算順が違うと、同じ軸でも最終ビットがずれて
+        // 微小な下落に見える。performance だけが変わる run どうしで閾値 0 の誤検出が無いこと。
+        let mut s = Store::open_in_memory().unwrap();
+        let mut base = eval_axes("a", 40.3, 3.0);
+        base.axes.security = 17.1;
+        base.axes.maintainability = 5.6;
+        let run = s.save_run("t", "", &[base.clone()]).unwrap();
+        let prev = s.run_comparable_scores(run).unwrap();
+        for i in 0..2000 {
+            let mut cur = base.clone();
+            cur.axes.performance = f64::from(i) * 0.007;
+            cur.axes.reasoning = f64::from(i % 7) * 0.3;
+            assert!(
+                find_regressions(&prev, &[cur], 0.0).is_empty(),
+                "performance={} で誤検出",
+                f64::from(i) * 0.007
+            );
+        }
     }
 
     #[test]
