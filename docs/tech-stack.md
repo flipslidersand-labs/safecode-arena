@@ -19,12 +19,14 @@
 | `serde` / `serde_json`       | 候補・結果・レポートのシリアライズ               | デファクト。JSON 出力で他ツール連携が容易   |
 | `toml`                       | 採点ルーブリック設定の読込                       | 設定ファイルを TOML で持たせる（Phase 2）   |
 | `anyhow`                     | アプリ層のエラー集約                             | エラー伝播を簡潔に                          |
-| `thiserror`                  | ドメイン層のエラー型定義                         | ライブラリ境界では型付きエラー              |
+| `thiserror`                  | （未使用）依存にあるが `src/` では使っていない   | 削除は別 Issue（#220）で対応予定            |
 | `tempfile`                   | 候補のサンドボックス展開                         | 一時ディレクトリの安全な生成/自動削除       |
 | `wait-timeout`               | 子プロセスのタイムアウト kill                    | 制限時間超過で確実に kill（暴走コード対策） |
+| `libc`                       | タイムアウト時のプロセスグループ kill（`killpg`） | `runner.rs` で子プロセス群を確実に止める    |
 | `chrono`                     | レポートのタイムスタンプ                         | 時刻整形                                    |
 | `rusqlite` (bundled)         | run 履歴の永続化・リグレッション検出             | bundled で system sqlite 非依存             |
 | `wasmtime` / `wasmtime-wasi` | Wasm サンドボックス実行（capability ベース隔離） | fuel/メモリ制限付き埋め込みランタイム       |
+| `ureq`                       | LLM レビューの HTTP クライアント（`llm_client.rs`） | 軽量な同期 HTTP クライアント               |
 
 ### dev-dependencies
 
@@ -40,10 +42,18 @@
 | Rust   | `cargo` / `cargo clippy` | compile / test / lint（security・保守シグナル） |
 | Rust   | `proptest`               | property test（`--prop-tests` 指定時）          |
 | Rust   | `cargo-mutants`          | mutation testing（`--mutation` 指定時）         |
+| Rust   | `cargo audit`            | 依存の脆弱性スキャン（未導入なら減点なし）      |
+| Rust   | `criterion`              | 性能ベンチマーク（候補側の dev-dependency、`cargo bench` で実行） |
 | Python | `python3 -m py_compile`  | compile（構文チェック）                         |
-| Python | `pytest`                 | test（`test_*.py` を収集）                      |
+| Python | `pytest`                 | test（`python_files=*.py` に上書きし `candidate.py` も収集） |
 | Python | `ruff`                   | lint（security・保守シグナル）                  |
 | Python | `mutmut`                 | mutation testing（`--mutation` 指定時）         |
+| Go     | `go build` / `go test`   | compile / test（一時モジュールで実行）          |
+| Go     | `staticcheck` / `go vet` | lint（staticcheck 優先、なければ go vet）       |
+| JS     | `node`                   | compile（`node --check`）                       |
+| JS     | `node --test`            | test（候補のテストファイルを実行）              |
+| JS/TS  | `eslint`                 | lint                                            |
+| TS     | `tsc`                    | compile（型チェック）                           |
 
 ## 発展フェーズで追加予定（未使用）
 
@@ -51,8 +61,6 @@
 | ------------- | ------------------------------------------------ | -------- |
 | `tree-sitter` | AST 解析・コード類似度（精緻な maintainability） | Phase 9+ |
 | `cargo-fuzz`  | Fuzzing 実行（外部ツール）                       | Phase 9+ |
-| `criterion`   | 性能ベンチマーク（絶対性能）                     | Phase 9+ |
-| `cargo-audit` | 依存の脆弱性スキャン                             | Phase 9+ |
 
 ## 開発ツール
 
