@@ -1,4 +1,7 @@
-/target
+# Rust のビルド出力。ai-code-verifier/target/ のようにサブディレクトリにも出るため、先頭の / は付けない
+target/
+# エージェントの worktree
+**/.claude/worktrees/
 **/*.rs.bk
 *.pdb
 
