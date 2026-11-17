@@ -38,8 +38,10 @@ impl Regression {
 
 /// run 間比較に使うスコア。performance（相対評価）と reasoning（LLM レビュー。
 /// 一時的な API 失敗で 0 点になり偽の下落になる）を除いた軸の合計。
+/// 加算順は `comparable_from_detail` と同じにする（合計から引くと最終ビットがずれ、
+/// 同じ軸でも保存済みの値と一致しなくなる）。
 pub fn comparable_score(axes: &AxisScores) -> f64 {
-    axes.total() - axes.performance - axes.reasoning
+    axes.correctness + axes.security + axes.maintainability + axes.resource_usage
 }
 
 /// 保存済み detail_json から比較用スコアを計算する。
@@ -204,9 +206,15 @@ impl Store {
     }
 }
 
+/// これ以下の下落は「点数が変わらない」とみなす（f64 の誤差。単位は点）。
+/// 保存側は SQLite の JSON から読み戻した値で、serde_json は既定では f64 の読み戻しが
+/// 1 ULP ずれることがあり（float_roundtrip なし）、同じ軸でも閾値 0 で微小な下落に見える。
+const SAME_SCORE_EPSILON: f64 = 1e-9;
+
 /// 過去の比較用スコア（`run_comparable_scores`）と現在の評価を突き合わせ、下がった候補を返す。
 /// 現在側も performance・reasoning を除いた `comparable_score` で比べる。
-/// `threshold` 以上下落したものだけを対象にする（誤差・揺らぎ除け）。
+/// 下落量が誤差（`SAME_SCORE_EPSILON`）を超え、かつ `threshold` 以上のものだけを対象にする。
+/// `threshold` が 0 でも、点数が変わらない候補は回帰としない。
 pub fn find_regressions(
     previous: &HashMap<String, f64>,
     current: &[Evaluation],
@@ -216,7 +224,8 @@ pub fn find_regressions(
     for e in current {
         if let Some(&prev) = previous.get(&e.candidate_id) {
             let cur = comparable_score(&e.axes);
-            if prev - cur >= threshold {
+            let drop = prev - cur;
+            if drop > SAME_SCORE_EPSILON && drop >= threshold {
                 out.push(Regression {
                     candidate_id: e.candidate_id.clone(),
                     previous: prev,
@@ -329,6 +338,64 @@ mod tests {
     }
 
     #[test]
+    fn zero_threshold_ignores_unchanged_score() {
+        let mut prev = HashMap::new();
+        prev.insert("a".to_string(), 85.0);
+        let curr = vec![eval("a", 85.0)];
+        assert!(find_regressions(&prev, &curr, 0.0).is_empty());
+    }
+
+    #[test]
+    fn zero_threshold_detects_any_drop() {
+        let mut prev = HashMap::new();
+        prev.insert("a".to_string(), 85.0);
+        let curr = vec![eval("a", 84.9)];
+        assert_eq!(find_regressions(&prev, &curr, 0.0).len(), 1);
+    }
+
+    #[test]
+    fn zero_threshold_ignores_rounding_when_only_performance_changes() {
+        // 保存側（軸の直接和）と現在側の加算順が違うと、同じ軸でも最終ビットがずれて
+        // 微小な下落に見える。performance だけが変わる run どうしで閾値 0 の誤検出が無いこと。
+        let mut s = Store::open_in_memory().unwrap();
+        let mut base = eval_axes("a", 40.3, 3.0);
+        base.axes.security = 17.1;
+        base.axes.maintainability = 5.6;
+        let run = s.save_run("t", "", &[base.clone()]).unwrap();
+        let prev = s.run_comparable_scores(run).unwrap();
+        for i in 0..2000 {
+            let mut cur = base.clone();
+            cur.axes.performance = f64::from(i) * 0.007;
+            cur.axes.reasoning = f64::from(i % 7) * 0.3;
+            assert!(
+                find_regressions(&prev, &[cur], 0.0).is_empty(),
+                "performance={} で誤検出",
+                f64::from(i) * 0.007
+            );
+        }
+    }
+
+    #[test]
+    fn zero_threshold_ignores_json_roundtrip_error() {
+        // serde_json は既定で f64 の読み戻しが 1 ULP ずれることがある（float_roundtrip なし）。
+        // 短い小数でない値を保存→読み戻しし、同じ軸の候補が閾値 0 で回帰にならないこと。
+        let mut s = Store::open_in_memory().unwrap();
+        let mut n = 0u32;
+        for i in 1..3000u32 {
+            let mut base = eval_axes("a", f64::from(i) * 0.013_7 / 3.0, 0.0);
+            base.axes.security = f64::from(i) * 0.771_3 / 7.0;
+            base.axes.maintainability = 3.969_230_769_230_769_3 + f64::from(i) / 13.0;
+            base.axes.resource_usage = f64::from(i) * 0.317_9 / 11.0;
+            let run = s.save_run("t", "", &[base.clone()]).unwrap();
+            let prev = s.run_comparable_scores(run).unwrap();
+            if !find_regressions(&prev, &[base], 0.0).is_empty() {
+                n += 1;
+            }
+        }
+        assert_eq!(n, 0, "同じ軸なのに閾値 0 で回帰扱い: {n} 件");
+    }
+
+    #[test]
     fn ignores_regression_below_threshold() {
         let mut prev = HashMap::new();
         prev.insert("a".to_string(), 85.0);
@@ -399,15 +466,13 @@ mod tests {
     }
 
     #[test]
-    fn threshold_zero_flags_ties_as_regression() {
-        // 現状の挙動を固定: threshold=0 だと同点（差 0）も `>=` により回帰として返る。
+    fn threshold_zero_does_not_flag_ties_as_regression() {
+        // threshold=0 でも差 0（同点）は回帰ではない。下落・上昇の扱いは変わらない。
         let mut prev = HashMap::new();
         prev.insert("a".to_string(), 60.0);
-        let regs = find_regressions(&prev, &[eval("a", 60.0)], 0.0);
-        assert_eq!(regs.len(), 1);
-        assert_eq!(regs[0].delta(), 0.0);
-        // 上昇は threshold=0 でも回帰ではない
+        assert!(find_regressions(&prev, &[eval("a", 60.0)], 0.0).is_empty());
         assert!(find_regressions(&prev, &[eval("a", 60.5)], 0.0).is_empty());
+        assert_eq!(find_regressions(&prev, &[eval("a", 59.5)], 0.0).len(), 1);
     }
 
     #[test]
