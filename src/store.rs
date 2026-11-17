@@ -206,7 +206,8 @@ impl Store {
 
 /// 過去の比較用スコア（`run_comparable_scores`）と現在の評価を突き合わせ、下がった候補を返す。
 /// 現在側も performance・reasoning を除いた `comparable_score` で比べる。
-/// `threshold` 以上下落したものだけを対象にする（誤差・揺らぎ除け）。
+/// 下落量が正で、かつ `threshold` 以上のものだけを対象にする（誤差・揺らぎ除け）。
+/// `threshold` が 0 でも、点数が変わらない候補は回帰としない。
 pub fn find_regressions(
     previous: &HashMap<String, f64>,
     current: &[Evaluation],
@@ -216,7 +217,8 @@ pub fn find_regressions(
     for e in current {
         if let Some(&prev) = previous.get(&e.candidate_id) {
             let cur = comparable_score(&e.axes);
-            if prev - cur >= threshold {
+            let drop = prev - cur;
+            if drop > 0.0 && drop >= threshold {
                 out.push(Regression {
                     candidate_id: e.candidate_id.clone(),
                     previous: prev,
@@ -329,6 +331,22 @@ mod tests {
     }
 
     #[test]
+    fn zero_threshold_ignores_unchanged_score() {
+        let mut prev = HashMap::new();
+        prev.insert("a".to_string(), 85.0);
+        let curr = vec![eval("a", 85.0)];
+        assert!(find_regressions(&prev, &curr, 0.0).is_empty());
+    }
+
+    #[test]
+    fn zero_threshold_detects_any_drop() {
+        let mut prev = HashMap::new();
+        prev.insert("a".to_string(), 85.0);
+        let curr = vec![eval("a", 84.9)];
+        assert_eq!(find_regressions(&prev, &curr, 0.0).len(), 1);
+    }
+
+    #[test]
     fn ignores_regression_below_threshold() {
         let mut prev = HashMap::new();
         prev.insert("a".to_string(), 85.0);
@@ -399,15 +417,13 @@ mod tests {
     }
 
     #[test]
-    fn threshold_zero_flags_ties_as_regression() {
-        // 現状の挙動を固定: threshold=0 だと同点（差 0）も `>=` により回帰として返る。
+    fn threshold_zero_does_not_flag_ties_as_regression() {
+        // threshold=0 でも差 0（同点）は回帰ではない。下落・上昇の扱いは変わらない。
         let mut prev = HashMap::new();
         prev.insert("a".to_string(), 60.0);
-        let regs = find_regressions(&prev, &[eval("a", 60.0)], 0.0);
-        assert_eq!(regs.len(), 1);
-        assert_eq!(regs[0].delta(), 0.0);
-        // 上昇は threshold=0 でも回帰ではない
+        assert!(find_regressions(&prev, &[eval("a", 60.0)], 0.0).is_empty());
         assert!(find_regressions(&prev, &[eval("a", 60.5)], 0.0).is_empty());
+        assert_eq!(find_regressions(&prev, &[eval("a", 59.5)], 0.0).len(), 1);
     }
 
     #[test]
