@@ -10,7 +10,7 @@
 
 ```rust
 enum Language { Rust, Python /* 発展: Go, JavaScript */ }
-// from_extension(".py") → Python, それ以外 → Rust
+// try_from_extension("py") → Some(Python), 未知の拡張子 → None
 ```
 
 ### `Candidate`
@@ -86,8 +86,8 @@ compile = Failed/TimedOut ──→ test / clippy / prop_test = Skipped
 
 ```text
 correctness     50   ← compile 40% + test 40% + prop_test 20%
-security        20   ← unsafe ヒューリスティック 50% + clippy 50%
-performance     15   ← 候補間 compile+test 時間の相対比較（最速=満点）
+security        20   ← unsafe ヒューリスティック 40% + lint 40% + cargo audit 20%
+performance     15   ← 候補間の相対比較（最速=満点）。Criterion の計測値を優先、無ければ compile+test 時間
 maintainability 10   ← 関数長ヒューリスティック 60% + clippy 40%
 resource_usage   5   ← Wasm サンドボックス実行が成功で満点、失敗/未実行で 0
 合計            100

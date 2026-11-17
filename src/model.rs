@@ -29,11 +29,6 @@ impl Language {
         }
     }
 
-    /// 互換用: 未知の拡張子は Rust 既定。新規コードは `try_from_extension` を使うこと。
-    pub fn from_extension(ext: &str) -> Language {
-        Self::try_from_extension(ext).unwrap_or(Language::Rust)
-    }
-
     pub fn name(&self) -> &'static str {
         match self {
             Language::Rust => "rust",
@@ -184,25 +179,11 @@ mod tests {
 
     #[test]
     fn try_from_extension_rejects_unknown_and_malformed() {
-        for ext in ["", "txt", "rs2", ".rs", "rs ", " rs", "r s", "\trs", "rs\n"] {
+        for ext in [
+            "", "unknown", "txt", "rs2", ".rs", "rs ", " rs", "r s", "\trs", "rs\n",
+        ] {
             assert_eq!(Language::try_from_extension(ext), None, "{ext:?}");
         }
-    }
-
-    #[test]
-    fn from_extension_known_matches_try_from() {
-        for ext in Language::SUPPORTED_EXTENSIONS {
-            assert_eq!(
-                Some(Language::from_extension(ext)),
-                Language::try_from_extension(ext)
-            );
-        }
-    }
-
-    #[test]
-    fn from_extension_falls_back_to_rust() {
-        assert_eq!(Language::from_extension("unknown"), Language::Rust);
-        assert_eq!(Language::from_extension(""), Language::Rust);
     }
 
     #[test]
