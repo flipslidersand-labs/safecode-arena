@@ -287,6 +287,11 @@ fn run_stage_capture_with(
         },
         Ok(Some(status)) => {
             let elapsed = start.elapsed();
+            // 子が自分で終了しても、裏に残した孫がいればグループごと止める。
+            // 回収済みでも安全: グループに生存者がいる間は pgid(=旧 pid)は再利用されず、
+            // 生存者がいなければ killpg は ESRCH で何もしない。kill/wait は回収済みなら無害。
+            // setsid で別セッションへ逃げたプロセスは止められない(対象外)。
+            kill_group(&mut child);
             if status.success() {
                 StageOutcome::Passed {
                     duration_ms: elapsed.as_millis() as u64,
@@ -428,6 +433,62 @@ mod tests {
                 .status();
         }
         assert!(!alive, "孫プロセス {pid} がタイムアウト後も残っている");
+    }
+
+    /// 裏で孫を起動して自分は `exit_code` で即終了するシェルを走らせ、
+    /// 戻った後に孫が残っていないことを確認する。
+    #[cfg(target_os = "linux")]
+    fn run_and_check_grandchild_gone(exit_code: i32, sleep_arg: &str) -> StageOutcome {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("grandchild.pid");
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg(format!(
+                "sleep {sleep_arg} & echo $! > \"$1\"; exit {exit_code}"
+            ))
+            .arg("sh")
+            .arg(&pid_file);
+        let (outcome, _) = run_stage_capture("exited", cmd, Duration::from_secs(10));
+
+        let pid: i32 = std::fs::read_to_string(&pid_file)
+            .expect("孫の PID ファイル")
+            .trim()
+            .parse()
+            .unwrap();
+        // SIGKILL 後の回収を最大 3 秒待つ。
+        let mut alive = true;
+        for _ in 0..30 {
+            alive = pid_alive(pid);
+            if !alive {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        if alive {
+            // 後始末（テスト失敗時に孫を残さない）
+            let _ = Command::new("kill")
+                .args(["-KILL", &pid.to_string()])
+                .status();
+        }
+        assert!(!alive, "孫プロセス {pid} が子の終了後も残っている");
+        outcome
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn exit_success_kills_leftover_grandchild() {
+        let outcome = run_and_check_grandchild_gone(0, "30.301");
+        assert!(outcome.is_passed(), "{outcome:?}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn exit_failure_kills_leftover_grandchild() {
+        let outcome = run_and_check_grandchild_gone(1, "30.302");
+        assert!(
+            matches!(outcome, StageOutcome::Failed { .. }),
+            "{outcome:?}"
+        );
     }
 
     #[test]
