@@ -402,6 +402,24 @@ fn render_comparison(out: &mut String, evals: &[Evaluation]) {
 
 // ── HTML ─────────────────────────────────────────────────────────────────────
 
+/// HTML のテキスト・属性値に埋め込む文字列をエスケープする。
+/// 候補のファイル名（`candidate_id`）は候補側が決められるため、そのまま埋め込むと
+/// `<img onerror=...>` のようなファイル名でレポートにスクリプトが入る。
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// ランク済みの評価からスタンドアロン HTML レポートを生成する。
 pub fn render_html(evals: &[Evaluation]) -> String {
     let generated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -415,7 +433,7 @@ pub fn render_html(evals: &[Evaluation]) -> String {
         body.push_str(&format!(
             "<tr{row_class}><td>{} {}</td><td><code>{}</code></td><td><strong>{:.1}</strong></td><td>{:.1}</td><td>{:.1}</td><td>{:.1}</td><td>{:.1}</td><td class=\"{}\">{}</td><td class=\"{}\">{}</td><td>{}</td><td class=\"{}\">{}</td></tr>\n",
             i + 1, medal(i),
-            e.candidate_id, e.score,
+            html_escape(&e.candidate_id), e.score,
             e.axes.correctness, e.axes.security, e.axes.performance, e.axes.maintainability,
             stage_label(&e.compile), stage_cell(&e.compile),
             stage_label(&e.test), stage_cell(&e.test),
@@ -438,7 +456,7 @@ pub fn render_html(evals: &[Evaluation]) -> String {
         };
         body.push_str(&format!(
             "<div class=\"bar-row\"><span class=\"bar-label\"><code>{}</code></span><div class=\"bar-wrap\"><div class=\"bar\" style=\"width:{pct:.1}%;background:{color}\"></div></div><span class=\"bar-score\">{:.1}</span></div>\n",
-            e.candidate_id, e.score
+            html_escape(&e.candidate_id), e.score
         ));
     }
 
@@ -454,7 +472,7 @@ pub fn render_html(evals: &[Evaluation]) -> String {
     for (i, e) in evals.iter().enumerate() {
         body.push_str(&format!(
             "<details open><summary><strong>{} {}位: <code>{}</code> — {:.1}点</strong></summary>\n",
-            medal(i), i + 1, e.candidate_id, e.score
+            medal(i), i + 1, html_escape(&e.candidate_id), e.score
         ));
         body.push_str("<table>\n<tr><th>軸</th><th>スコア</th><th>上限</th><th>達成率</th></tr>\n");
         for (name, get, limit) in AXES {
@@ -650,15 +668,27 @@ mod tests {
         assert!(html.contains("候補数: 2"));
     }
 
-    /// 現状の挙動の固定（特性テスト）であり、仕様ではない。
-    /// candidate_id は HTML エスケープされずそのまま埋め込まれる。
-    /// エスケープを導入する際は、このテストを意図的に更新すること。
+    /// candidate_id は HTML エスケープして埋め込む（#241）。サマリー表・スコア棒・候補詳細の3か所。
     #[test]
-    fn characterization_candidate_id_is_not_html_escaped_current_behavior() {
+    fn candidate_id_is_html_escaped_in_every_section() {
         let html = render_html(&[eval("<b>&x", 50.0)]);
-        assert!(html.contains("<code><b>&x</code>"));
-        assert!(!html.contains("&lt;b&gt;"));
-        assert!(!html.contains("&amp;x"));
+        assert!(!html.contains("<b>&x"), "生の candidate_id が残っている");
+        // サマリー表・スコア棒・候補詳細の 3 か所すべてがエスケープ済み
+        assert_eq!(html.matches("<code>&lt;b&gt;&amp;x</code>").count(), 3);
+    }
+
+    #[test]
+    fn hostile_candidate_id_cannot_inject_script_or_attribute() {
+        let id = "x<img src=x onerror=alert(1)>\"'.rs";
+        let html = render_html(&[eval(id, 50.0)]);
+        assert!(!html.contains("<img"), "タグが生で入っている");
+        assert!(html.contains("&lt;img src=x onerror=alert(1)&gt;&quot;&#39;.rs"));
+    }
+
+    #[test]
+    fn html_escape_leaves_plain_text_unchanged() {
+        assert_eq!(html_escape("fast_impl-2.rs"), "fast_impl-2.rs");
+        assert_eq!(html_escape("日本語.rs"), "日本語.rs");
     }
 
     /// 現状の挙動の固定（特性テスト）であり、仕様ではない。
