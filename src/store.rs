@@ -206,9 +206,14 @@ impl Store {
     }
 }
 
+/// これ以下の下落は「点数が変わらない」とみなす（f64 の誤差。単位は点）。
+/// 保存側は SQLite の JSON から読み戻した値で、serde_json は既定では f64 の読み戻しが
+/// 1 ULP ずれることがあり（float_roundtrip なし）、同じ軸でも閾値 0 で微小な下落に見える。
+const SAME_SCORE_EPSILON: f64 = 1e-9;
+
 /// 過去の比較用スコア（`run_comparable_scores`）と現在の評価を突き合わせ、下がった候補を返す。
 /// 現在側も performance・reasoning を除いた `comparable_score` で比べる。
-/// 下落量が正で、かつ `threshold` 以上のものだけを対象にする（誤差・揺らぎ除け）。
+/// 下落量が誤差（`SAME_SCORE_EPSILON`）を超え、かつ `threshold` 以上のものだけを対象にする。
 /// `threshold` が 0 でも、点数が変わらない候補は回帰としない。
 pub fn find_regressions(
     previous: &HashMap<String, f64>,
@@ -220,7 +225,7 @@ pub fn find_regressions(
         if let Some(&prev) = previous.get(&e.candidate_id) {
             let cur = comparable_score(&e.axes);
             let drop = prev - cur;
-            if drop > 0.0 && drop >= threshold {
+            if drop > SAME_SCORE_EPSILON && drop >= threshold {
                 out.push(Regression {
                     candidate_id: e.candidate_id.clone(),
                     previous: prev,
@@ -368,6 +373,26 @@ mod tests {
                 f64::from(i) * 0.007
             );
         }
+    }
+
+    #[test]
+    fn zero_threshold_ignores_json_roundtrip_error() {
+        // serde_json は既定で f64 の読み戻しが 1 ULP ずれることがある（float_roundtrip なし）。
+        // 短い小数でない値を保存→読み戻しし、同じ軸の候補が閾値 0 で回帰にならないこと。
+        let mut s = Store::open_in_memory().unwrap();
+        let mut n = 0u32;
+        for i in 1..3000u32 {
+            let mut base = eval_axes("a", f64::from(i) * 0.013_7 / 3.0, 0.0);
+            base.axes.security = f64::from(i) * 0.771_3 / 7.0;
+            base.axes.maintainability = 3.969_230_769_230_769_3 + f64::from(i) / 13.0;
+            base.axes.resource_usage = f64::from(i) * 0.317_9 / 11.0;
+            let run = s.save_run("t", "", &[base.clone()]).unwrap();
+            let prev = s.run_comparable_scores(run).unwrap();
+            if !find_regressions(&prev, &[base], 0.0).is_empty() {
+                n += 1;
+            }
+        }
+        assert_eq!(n, 0, "同じ軸なのに閾値 0 で回帰扱い: {n} 件");
     }
 
     #[test]
