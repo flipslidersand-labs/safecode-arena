@@ -158,11 +158,6 @@ impl Rubric {
         }
         Ok(())
     }
-
-    /// 後方互換: グローバルルーブリックを読む。
-    pub fn load(explicit: Option<&str>) -> Result<Rubric> {
-        Ok(Config::load(explicit)?.default)
-    }
 }
 
 impl Config {
@@ -247,7 +242,7 @@ mod tests {
 
     #[test]
     fn default_when_no_file() {
-        let r = Rubric::load(None).unwrap();
+        let r = Config::load(None).unwrap().default;
         assert_eq!(r.correctness, 50.0);
         assert_eq!(r.resource_usage, 5.0);
     }
@@ -260,7 +255,9 @@ mod tests {
             "[weights]\ncorrectness = 70\nsecurity = 10\nperformance = 10\nmaintainability = 5\nresource_usage = 5"
         )
         .unwrap();
-        let r = Rubric::load(Some(f.path().to_str().unwrap())).unwrap();
+        let r = Config::load(Some(f.path().to_str().unwrap()))
+            .unwrap()
+            .default;
         assert_eq!(r.correctness, 70.0);
         assert_eq!(r.security, 10.0);
     }
@@ -310,7 +307,7 @@ mod tests {
 
     #[test]
     fn missing_explicit_path_errors() {
-        assert!(Rubric::load(Some("/no/such/safecode.toml")).is_err());
+        assert!(Config::load(Some("/no/such/safecode.toml")).is_err());
     }
 
     #[test]

@@ -43,36 +43,6 @@ pub(crate) fn lint_maintainability_ratio(warnings: usize) -> f64 {
 /// - `mutation_caught` / `mutation_total`: cargo mutants の結果（correctness に反映）
 ///   mutation が実行された場合（total > 0）、correctness の重みを再配分する:
 ///   compile(30%) + test(30%) + prop_test(15%) + mutation(25%)
-#[allow(clippy::too_many_arguments)]
-pub fn axes_without_performance(
-    compile: &StageOutcome,
-    test: &StageOutcome,
-    prop_test: &StageOutcome,
-    lint: &StageOutcome,
-    lint_warnings: usize,
-    wasm: &StageOutcome,
-    metrics: &SourceMetrics,
-    rubric: &Rubric,
-    mutation_caught: usize,
-    mutation_total: usize,
-    audit_findings: usize,
-) -> AxisScores {
-    axes_with_audit_status(
-        compile,
-        test,
-        prop_test,
-        lint,
-        lint_warnings,
-        wasm,
-        metrics,
-        rubric,
-        mutation_caught,
-        mutation_total,
-        Some(audit_findings),
-    )
-}
-
-/// `axes_without_performance` の audit 結果を `Option` で受ける版。
 ///
 /// `audit_findings` が `None` なら cargo audit が結果を返せなかった（audit 不能）ことを表し、
 /// security の audit 項(20%)を除外して unsafe/lint の重みで再配分する（0 件扱いで加点しない, #179）。
@@ -295,7 +265,7 @@ mod tests {
         SourceMetrics::analyze(src)
     }
     fn axes(compile: &StageOutcome, test: &StageOutcome, src: &str) -> AxisScores {
-        axes_without_performance(
+        axes_with_audit_status(
             compile,
             test,
             &StageOutcome::Skipped,
@@ -306,7 +276,7 @@ mod tests {
             &Rubric::default(),
             0,
             0,
-            0,
+            Some(0),
         )
     }
 
@@ -321,7 +291,7 @@ mod tests {
     #[test]
     fn correctness_with_prop_test_reaches_full() {
         let r = Rubric::default();
-        let a = axes_without_performance(
+        let a = axes_with_audit_status(
             &passed(1),
             &passed(1),
             &passed(1),
@@ -332,7 +302,7 @@ mod tests {
             &r,
             0,
             0,
-            0,
+            Some(0),
         );
         assert_eq!(a.correctness, r.correctness);
     }
@@ -354,7 +324,7 @@ mod tests {
     #[test]
     fn lint_warnings_reduce_security() {
         let r = Rubric::default();
-        let no_warn = axes_without_performance(
+        let no_warn = axes_with_audit_status(
             &passed(1),
             &passed(1),
             &StageOutcome::Skipped,
@@ -365,9 +335,9 @@ mod tests {
             &r,
             0,
             0,
-            0,
+            Some(0),
         );
-        let with_warn = axes_without_performance(
+        let with_warn = axes_with_audit_status(
             &passed(1),
             &passed(1),
             &StageOutcome::Skipped,
@@ -378,14 +348,14 @@ mod tests {
             &r,
             0,
             0,
-            0,
+            Some(0),
         );
         assert!(no_warn.security > with_warn.security);
     }
 
     #[test]
     fn lint_failure_reduces_security_to_half() {
-        let clean = axes_without_performance(
+        let clean = axes_with_audit_status(
             &passed(1),
             &passed(1),
             &StageOutcome::Skipped,
@@ -396,9 +366,9 @@ mod tests {
             &Rubric::default(),
             0,
             0,
-            0,
+            Some(0),
         );
-        let lint_fail = axes_without_performance(
+        let lint_fail = axes_with_audit_status(
             &passed(1),
             &passed(1),
             &StageOutcome::Skipped,
@@ -409,7 +379,7 @@ mod tests {
             &Rubric::default(),
             0,
             0,
-            0,
+            Some(0),
         );
         // lint failed → lint_sec = 0, unsafe clean → unsafe_ratio = 1.0, audit_sec = 1.0
         // security = rubric.security * (1.0*0.4 + 0.0*0.4 + 1.0*0.2) = rubric.security * 0.6
@@ -419,7 +389,7 @@ mod tests {
     #[test]
     fn wasm_pass_awards_resource_usage() {
         let r = Rubric::default();
-        let with_wasm = axes_without_performance(
+        let with_wasm = axes_with_audit_status(
             &passed(1),
             &passed(1),
             &StageOutcome::Skipped,
@@ -430,9 +400,9 @@ mod tests {
             &r,
             0,
             0,
-            0,
+            Some(0),
         );
-        let no_wasm = axes_without_performance(
+        let no_wasm = axes_with_audit_status(
             &passed(1),
             &passed(1),
             &StageOutcome::Skipped,
@@ -443,7 +413,7 @@ mod tests {
             &r,
             0,
             0,
-            0,
+            Some(0),
         );
         assert_eq!(with_wasm.resource_usage, r.resource_usage);
         assert_eq!(no_wasm.resource_usage, 0.0);
@@ -539,7 +509,7 @@ mod tests {
     fn mutation_skipped_gives_same_as_before() {
         // mutation_total == 0 → 従来の重み (compile 40% + test 40%)
         let r = Rubric::default();
-        let a = axes_without_performance(
+        let a = axes_with_audit_status(
             &passed(1),
             &passed(1),
             &StageOutcome::Skipped,
@@ -550,7 +520,7 @@ mod tests {
             &r,
             0, // mutation_caught
             0, // mutation_total → Skipped
-            0,
+            Some(0),
         );
         assert_eq!(a.correctness, r.correctness * 0.8);
     }
@@ -559,7 +529,7 @@ mod tests {
     fn mutation_full_score_boosts_correctness() {
         // mutation 全検出 (caught == total) → compile(30%) + test(30%) + mutation(25%) = 85%
         let r = Rubric::default();
-        let a = axes_without_performance(
+        let a = axes_with_audit_status(
             &passed(1),
             &passed(1),
             &StageOutcome::Skipped,
@@ -570,7 +540,7 @@ mod tests {
             &r,
             12, // mutation_caught
             12, // mutation_total
-            0,
+            Some(0),
         );
         assert!((a.correctness - r.correctness * 0.85).abs() < 1e-9);
     }
@@ -579,7 +549,7 @@ mod tests {
     fn mutation_zero_score_reduces_correctness() {
         // mutation 0 件検出 → compile(30%) + test(30%) + mutation(0%) = 60%
         let r = Rubric::default();
-        let a = axes_without_performance(
+        let a = axes_with_audit_status(
             &passed(1),
             &passed(1),
             &StageOutcome::Skipped,
@@ -590,7 +560,7 @@ mod tests {
             &r,
             0,  // mutation_caught
             12, // mutation_total → 0%
-            0,
+            Some(0),
         );
         assert!((a.correctness - r.correctness * 0.60).abs() < 1e-9);
     }
@@ -599,7 +569,7 @@ mod tests {
     fn mutation_partial_score_is_proportional() {
         // 9/12 = 75% → compile(30%) + test(30%) + mutation(25% * 0.75) = 78.75%
         let r = Rubric::default();
-        let a = axes_without_performance(
+        let a = axes_with_audit_status(
             &passed(1),
             &passed(1),
             &StageOutcome::Skipped,
@@ -610,7 +580,7 @@ mod tests {
             &r,
             9,  // mutation_caught
             12, // mutation_total
-            0,
+            Some(0),
         );
         let expected = r.correctness * (0.30 + 0.30 + 0.25 * 0.75);
         assert!((a.correctness - expected).abs() < 1e-9);
@@ -908,7 +878,7 @@ mod tests {
 
     /// compile 通過・クリーンなソースで audit / lint 警告 / lint 結果だけを変える。
     fn axes_with(lint: &StageOutcome, warnings: usize, audit: usize) -> AxisScores {
-        axes_without_performance(
+        axes_with_audit_status(
             &passed(1),
             &passed(1),
             &StageOutcome::Skipped,
@@ -919,7 +889,7 @@ mod tests {
             &Rubric::default(),
             0,
             0,
-            audit,
+            Some(audit),
         )
     }
 
@@ -965,7 +935,7 @@ mod tests {
 
     #[test]
     fn audit_findings_ignored_when_compile_failed() {
-        let a = axes_without_performance(
+        let a = axes_with_audit_status(
             &failed(),
             &StageOutcome::Skipped,
             &StageOutcome::Skipped,
@@ -976,7 +946,7 @@ mod tests {
             &Rubric::default(),
             0,
             0,
-            0,
+            Some(0),
         );
         assert_eq!(a.security, 0.0);
         assert_eq!(a.maintainability, 0.0);
