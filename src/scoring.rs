@@ -13,7 +13,7 @@ use crate::model::{AxisScores, Evaluation, StageOutcome};
 /// lint warning 数から security 達成率を算出する。
 ///
 /// 0 件 = 1.0、1 件ごとに 0.1 減点。lint 自体が失敗なら 0.0 扱い。
-fn lint_security_ratio(lint: &StageOutcome, warnings: usize) -> f64 {
+pub(crate) fn lint_security_ratio(lint: &StageOutcome, warnings: usize) -> f64 {
     match lint {
         StageOutcome::Passed { .. } => (1.0 - 0.1 * warnings as f64).clamp(0.0, 1.0),
         StageOutcome::Failed { .. } => 0.0,
@@ -24,7 +24,7 @@ fn lint_security_ratio(lint: &StageOutcome, warnings: usize) -> f64 {
 /// lint warning 数から maintainability 補正係数を返す。
 ///
 /// 0 件 = 1.0、3 件ごとに 0.1 減点。
-fn lint_maintainability_ratio(warnings: usize) -> f64 {
+pub(crate) fn lint_maintainability_ratio(warnings: usize) -> f64 {
     (1.0 - 0.1 * (warnings / 3) as f64).clamp(0.0, 1.0)
 }
 
