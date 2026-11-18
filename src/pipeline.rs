@@ -328,6 +328,16 @@ pub struct EvalOptions<'a> {
     pub run_llm_review: bool,
 }
 
+/// `run_*_stages` に共通で渡す実行コンテキスト。言語が使わない項目は無視される。
+#[derive(Clone, Copy)]
+struct StageContext<'a> {
+    timeout: Duration,
+    tests_dir: Option<&'a Path>,
+    prop_tests_dir: Option<&'a Path>,
+    wasm_opts: &'a WasmOptions<'a>,
+    run_mutation: bool,
+}
+
 /// 言語ごとに対応する `EvalOptions` の機能（`run_*_stages` が受け取る引数に対応）。
 /// 実行条件キー（`main.rs` の `run_options_key`）と警告の両方がここを参照する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -399,22 +409,19 @@ pub fn evaluate_candidate(
     let dir = tempfile::tempdir().context("一時ディレクトリの生成に失敗")?;
     let root = dir.path();
 
+    let ctx = StageContext {
+        timeout,
+        tests_dir: opts.tests_dir,
+        prop_tests_dir: opts.prop_tests_dir,
+        wasm_opts: &opts.wasm_opts,
+        run_mutation: opts.run_mutation,
+    };
     let results = match candidate.language {
-        Language::Rust => run_rust_stages(
-            root,
-            candidate,
-            timeout,
-            opts.tests_dir,
-            opts.prop_tests_dir,
-            &opts.wasm_opts,
-            opts.run_mutation,
-        )?,
-        Language::Python => {
-            run_python_stages(root, candidate, timeout, opts.tests_dir, opts.run_mutation)?
-        }
-        Language::Go => run_go_stages(root, candidate, timeout, opts.tests_dir, opts.run_mutation)?,
-        Language::JavaScript => run_js_stages(root, candidate, timeout, opts.tests_dir)?,
-        Language::TypeScript => run_ts_stages(root, candidate, timeout, opts.tests_dir)?,
+        Language::Rust => run_rust_stages(root, candidate, &ctx)?,
+        Language::Python => run_python_stages(root, candidate, &ctx)?,
+        Language::Go => run_go_stages(root, candidate, &ctx)?,
+        Language::JavaScript => run_js_stages(root, candidate, &ctx)?,
+        Language::TypeScript => run_ts_stages(root, candidate, &ctx)?,
     };
 
     // LLM セマンティックレビュー（オプション）
@@ -582,15 +589,14 @@ fn rust_build_args(is_bench: bool) -> &'static [&'static str] {
 }
 
 /// Rust 候補: 一時 Cargo プロジェクトで compile → test → lint(clippy) → prop_test → wasm → mutation。
-fn run_rust_stages(
-    root: &Path,
-    candidate: &Candidate,
-    timeout: Duration,
-    tests_dir: Option<&Path>,
-    prop_tests_dir: Option<&Path>,
-    wasm_opts: &WasmOptions,
-    run_mutation: bool,
-) -> Result<StageResults> {
+fn run_rust_stages(root: &Path, candidate: &Candidate, ctx: &StageContext) -> Result<StageResults> {
+    let StageContext {
+        timeout,
+        tests_dir,
+        prop_tests_dir,
+        wasm_opts,
+        run_mutation,
+    } = *ctx;
     fs::create_dir_all(root.join("src")).context("src ディレクトリの作成に失敗")?;
     let is_bench = has_bench(&candidate.source);
     let toml = if is_bench {
@@ -741,10 +747,14 @@ fn parse_mutants_json(stdout: &str) -> Option<(usize, usize)> {
 fn run_python_stages(
     root: &Path,
     candidate: &Candidate,
-    timeout: Duration,
-    tests_dir: Option<&Path>,
-    run_mutation: bool,
+    ctx: &StageContext,
 ) -> Result<StageResults> {
+    let StageContext {
+        timeout,
+        tests_dir,
+        run_mutation,
+        ..
+    } = *ctx;
     fs::write(root.join("candidate.py"), &candidate.source).context("候補ソースの書込に失敗")?;
     if let Some(dir) = tests_dir {
         copy_ext_no_clobber(dir, root, "py")?;
@@ -925,13 +935,13 @@ fn go_lint_run_failed(output: &str) -> bool {
 
 /// Go 候補: 一時モジュールで go build → go test → staticcheck（なければ go vet）。
 /// prop_test / wasm は非対応のため Skipped。
-fn run_go_stages(
-    root: &Path,
-    candidate: &Candidate,
-    timeout: Duration,
-    tests_dir: Option<&Path>,
-    run_mutation: bool,
-) -> Result<StageResults> {
+fn run_go_stages(root: &Path, candidate: &Candidate, ctx: &StageContext) -> Result<StageResults> {
+    let StageContext {
+        timeout,
+        tests_dir,
+        run_mutation,
+        ..
+    } = *ctx;
     // go.mod を生成（依存なしの最小モジュール）
     let go_mod = "module candidate\n\ngo 1.22\n";
     fs::write(root.join("go.mod"), go_mod).context("go.mod の書込に失敗")?;
@@ -1132,12 +1142,10 @@ fn test_verdict_failure(lang: Language, output: &str, go_has_tests: bool) -> Opt
 
 /// JavaScript 候補: node --check（構文検証）→ node --test → ESLint（あれば）。
 /// prop_test / wasm は非対応のため Skipped。
-fn run_js_stages(
-    root: &Path,
-    candidate: &Candidate,
-    timeout: Duration,
-    tests_dir: Option<&Path>,
-) -> Result<StageResults> {
+fn run_js_stages(root: &Path, candidate: &Candidate, ctx: &StageContext) -> Result<StageResults> {
+    let StageContext {
+        timeout, tests_dir, ..
+    } = *ctx;
     fs::write(root.join("candidate.js"), &candidate.source).context("候補ソースの書込に失敗")?;
     if let Some(dir) = tests_dir {
         copy_ext_no_clobber(dir, root, "js")?;
@@ -1196,12 +1204,10 @@ fn tsc_available() -> bool {
 /// TypeScript 候補: tsc --noEmit（型検査）→ tsc + node --test（テスト）→ ESLint（あれば）。
 /// prop_test / wasm / mutation は非対応のため Skipped。
 /// `tsc` が PATH にない場合はコンパイル Skipped（減点なし）。
-fn run_ts_stages(
-    root: &Path,
-    candidate: &Candidate,
-    timeout: Duration,
-    tests_dir: Option<&Path>,
-) -> Result<StageResults> {
+fn run_ts_stages(root: &Path, candidate: &Candidate, ctx: &StageContext) -> Result<StageResults> {
+    let StageContext {
+        timeout, tests_dir, ..
+    } = *ctx;
     // 最小 tsconfig（strict + CommonJS 出力）
     let tsconfig = r#"{"compilerOptions":{"target":"ES2022","module":"CommonJS","strict":true,"outDir":"dist"},"include":["*.ts"]}"#;
     fs::write(root.join("tsconfig.json"), tsconfig).context("tsconfig.json の書込に失敗")?;
@@ -2064,19 +2070,22 @@ mod copy_assemble_tests {
     /// テストディレクトリに候補ファイルと同名のファイルがあっても候補を上書きさせない。
     fn assert_collision_is_error(
         name: &str,
-        run: fn(&Path, &Candidate, Duration, Option<&Path>) -> Result<StageResults>,
+        run: fn(&Path, &Candidate, &StageContext) -> Result<StageResults>,
     ) {
         let d = tempfile::tempdir().unwrap();
         let tests = d.path().join("tests");
         write(&tests, name, "EVIL");
         let root = d.path().join("root");
         fs::create_dir_all(&root).unwrap();
-        let res = run(
-            &root,
-            &cand("CANDIDATE"),
-            Duration::from_secs(5),
-            Some(&tests),
-        );
+        let wasm_opts = WasmOptions::default();
+        let ctx = StageContext {
+            timeout: Duration::from_secs(5),
+            tests_dir: Some(&tests),
+            prop_tests_dir: None,
+            wasm_opts: &wasm_opts,
+            run_mutation: false,
+        };
+        let res = run(&root, &cand("CANDIDATE"), &ctx);
         let err = format!("{:#}", res.err().expect("衝突はエラーになるべき"));
         assert!(err.contains(name), "{err}");
         assert_eq!(fs::read_to_string(root.join(name)).unwrap(), "CANDIDATE");
@@ -2084,16 +2093,12 @@ mod copy_assemble_tests {
 
     #[test]
     fn python_tests_dir_candidate_name_collision_is_error() {
-        assert_collision_is_error("candidate.py", |r, c, t, d| {
-            run_python_stages(r, c, t, d, false)
-        });
+        assert_collision_is_error("candidate.py", run_python_stages);
     }
 
     #[test]
     fn go_tests_dir_candidate_name_collision_is_error() {
-        assert_collision_is_error("candidate.go", |r, c, t, d| {
-            run_go_stages(r, c, t, d, false)
-        });
+        assert_collision_is_error("candidate.go", run_go_stages);
     }
 
     #[test]
