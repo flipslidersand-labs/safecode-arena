@@ -38,10 +38,10 @@ enum Command {
     Evaluate {
         /// 検証する Rust ソースファイル（複数指定可）。
         candidates: Vec<String>,
-        /// 統合テストとして含める `.rs` を置いたディレクトリ（任意）。
+        /// 統合テストを置いたディレクトリ（任意、全言語対応。Rust は `.rs`、他言語は各言語のテストファイル）。
         #[arg(long)]
         tests: Option<String>,
-        /// proptest を使った property test ファイルを置いたディレクトリ（任意）。
+        /// proptest を使った property test ファイルを置いたディレクトリ（任意、Rust のみ。他言語では警告して無視）。
         /// 指定すると proptest が dev-dependency に追加されて実行される。
         #[arg(long)]
         prop_tests: Option<String>,
@@ -63,7 +63,7 @@ enum Command {
         /// リグレッションと判定するスコア下落の下限（0 以上の有限値）。
         #[arg(long, default_value_t = 1.0, value_parser = safecode_arena::config::parse_regression_threshold)]
         regression_threshold: f64,
-        /// Wasm サンドボックスで実行する候補のエントリ関数名（no-arg pub fn）。
+        /// Wasm サンドボックスで実行する候補のエントリ関数名（no-arg pub fn、Rust のみ。他言語では警告して無視）。
         /// 指定すると wasm32-wasip1 にビルドして隔離実行する。
         #[arg(long)]
         wasm_entry: Option<String>,
@@ -73,7 +73,7 @@ enum Command {
         /// Wasm 実行のメモリ上限（MB、1〜4096）。
         #[arg(long, default_value_t = 64, value_parser = safecode_arena::wasm::parse_wasm_memory_mb)]
         wasm_max_memory_mb: usize,
-        /// ミューテーションテスト（cargo mutants）を実行してテスト品質を採点する。
+        /// ミューテーションテストを実行してテスト品質を採点する（Rust/Python/Go。JS/TS では警告して無視）。
         /// 実行時間が長いためデフォルト off。cargo-mutants が PATH にない場合は Skipped 扱い。
         #[arg(long)]
         mutation: bool,
@@ -247,6 +247,7 @@ fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
                 .iter()
                 .map(|c| (c.language.name(), config.rubric_for(c.language.name())))
                 .collect(),
+            languages: candidates.iter().map(|c| c.language).collect(),
         });
         let has_regression = persist_and_report_regressions(
             db_path,
@@ -273,6 +274,8 @@ struct RunConditions<'a> {
     wasm_max_memory_mb: usize,
     /// 今回評価した候補の (言語名, 適用ルーブリック)。
     rubrics: Vec<(&'a str, Rubric)>,
+    /// 今回評価した候補の言語。対応しないオプションをキーから除くために使う。
+    languages: Vec<Language>,
 }
 
 /// スコアに影響する実行条件を正規化した比較キー（#191, #243）。
@@ -280,6 +283,7 @@ struct RunConditions<'a> {
 /// 含めるもの: --llm-review / --mutation / --wasm-entry / --wasm-fuel / --wasm-max-memory-mb（上限超過で resource_usage が変わる）、--tests・--prop-tests を使ったか（有無のみ、パスは含めない）、
 /// 評価した言語ごとの適用ルーブリック（重み）。ハッシュは使わず、言語名で整列・重複排除した
 /// 文字列にするため決定的で、不一致時に原因を目視できる。
+/// ただし候補の言語が対応しないオプション（`capabilities`）は、どの候補も対応しない場合キーから除く。
 /// 含めないもの: --out / --format / --timeout-secs / --db / --regression-threshold（採点に無関係、または判定側の設定）。
 fn run_options_key(c: &RunConditions) -> String {
     let mut rubrics: Vec<(&str, Rubric)> = c.rubrics.clone();
@@ -299,15 +303,34 @@ fn run_options_key(c: &RunConditions) -> String {
             )
         })
         .collect();
+    // どの候補の言語も対応しないオプションは実行結果に影響しないのでキーに含めない。
+    // Rust 候補を含む run では全オプションが有効なので従来のキーと同一。
+    let caps: Vec<_> = c
+        .languages
+        .iter()
+        .map(|l| pipeline::capabilities(*l))
+        .collect();
+    let mutation = c.mutation && caps.iter().any(|k| k.mutation);
+    let prop_tests = c.prop_tests && caps.iter().any(|k| k.prop_tests);
+    let wasm = caps.iter().any(|k| k.wasm);
+    let (wasm_entry, wasm_fuel, wasm_max_memory_mb) = if wasm {
+        (
+            c.wasm_entry.unwrap_or(""),
+            c.wasm_fuel,
+            c.wasm_max_memory_mb,
+        )
+    } else {
+        ("", 0, 0)
+    };
     format!(
         "llm_review={};mutation={};wasm_entry={};tests={};prop_tests={};wasm_fuel={};wasm_max_memory_mb={};rubric={}",
         c.llm_review,
-        c.mutation,
-        c.wasm_entry.unwrap_or(""),
+        mutation,
+        wasm_entry,
         c.tests,
-        c.prop_tests,
-        c.wasm_fuel,
-        c.wasm_max_memory_mb,
+        prop_tests,
+        wasm_fuel,
+        wasm_max_memory_mb,
         weights.join("|")
     )
 }
@@ -493,6 +516,7 @@ fn run_history(db_path: &str) -> anyhow::Result<()> {
 mod tests {
     use super::{keep_evaluated, run_options_key, RunConditions};
     use safecode_arena::config::Rubric;
+    use safecode_arena::model::Language;
     use safecode_arena::store::Store;
 
     fn base() -> RunConditions<'static> {
@@ -505,6 +529,7 @@ mod tests {
             wasm_fuel: 100_000_000,
             wasm_max_memory_mb: 64,
             rubrics: vec![("rust", Rubric::default())],
+            languages: vec![Language::Rust],
         }
     }
 
@@ -578,5 +603,62 @@ mod tests {
         let id = s.save_run("t1", &k_prop, &[]).unwrap();
         assert_eq!(s.latest_run_id_matching(&k_prop).unwrap(), Some(id));
         assert_eq!(s.latest_run_id_matching(&k_plain).unwrap(), None);
+    }
+
+    #[test]
+    fn rust_key_is_unchanged_format() {
+        let mut c = base();
+        c.mutation = true;
+        c.wasm_entry = Some("run");
+        c.prop_tests = true;
+        assert_eq!(
+            run_options_key(&c),
+            format!(
+                "llm_review=false;mutation=true;wasm_entry=run;tests=true;prop_tests=true;wasm_fuel=100000000;wasm_max_memory_mb=64;rubric=rust:{}",
+                {
+                    let r = Rubric::default();
+                    format!(
+                        "{},{},{},{},{},{}",
+                        r.correctness, r.security, r.performance, r.maintainability, r.resource_usage, r.reasoning
+                    )
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn key_ignores_options_unsupported_by_all_languages() {
+        let mut plain = base();
+        plain.languages = vec![Language::JavaScript];
+        let mut loud = base();
+        loud.languages = vec![Language::JavaScript];
+        loud.mutation = true;
+        loud.prop_tests = true;
+        loud.wasm_entry = Some("run");
+        loud.wasm_fuel = 1;
+        loud.wasm_max_memory_mb = 1;
+        assert_eq!(run_options_key(&plain), run_options_key(&loud));
+    }
+
+    #[test]
+    fn key_keeps_mutation_for_python_but_not_wasm() {
+        let mut a = base();
+        a.languages = vec![Language::Python];
+        let k = run_options_key(&a);
+        a.mutation = true;
+        assert_ne!(run_options_key(&a), k);
+        let mut b = base();
+        b.languages = vec![Language::Python];
+        b.wasm_entry = Some("run");
+        assert_eq!(run_options_key(&b), k);
+    }
+
+    #[test]
+    fn mixed_run_with_rust_keeps_rust_options() {
+        let mut a = base();
+        a.languages = vec![Language::JavaScript, Language::Rust];
+        let k = run_options_key(&a);
+        a.wasm_entry = Some("run");
+        assert_ne!(run_options_key(&a), k);
     }
 }
