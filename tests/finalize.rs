@@ -7,31 +7,16 @@ fn passed(ms: u64) -> StageOutcome {
     StageOutcome::Passed { duration_ms: ms }
 }
 
-// TODO: #344 のマージ後に Evaluation::for_test へ置き換える。
 fn eval(id: &str, ms: u64, correctness: f64) -> Evaluation {
     let axes = AxisScores {
         correctness,
         ..AxisScores::default()
     };
     Evaluation {
-        candidate_id: id.into(),
         compile: passed(ms),
-        test: passed(0),
-        lint: StageOutcome::Skipped,
-        lint_warnings: 0,
-        prop_test: StageOutcome::Skipped,
-        wasm: StageOutcome::Skipped,
-        wasm_fuel_used: None,
-        mutation: StageOutcome::Skipped,
-        mutation_caught: 0,
-        mutation_total: 0,
-        audit_findings: 0,
-        bench_ns: None,
-        reasoning: StageOutcome::Skipped,
-        reasoning_score: 0.0,
-        reasoning_comment: None,
         axes,
         score: axes.total(),
+        ..Evaluation::for_test(id)
     }
 }
 
