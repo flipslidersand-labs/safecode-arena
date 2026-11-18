@@ -4,10 +4,11 @@
 //! `Language::SUPPORTED_EXTENSIONS` の更新が必要（網羅はテストで検査する）。
 
 use crate::model::{Candidate, Language};
-use crate::pipeline::{
-    run_go_stages, run_js_stages, run_python_stages, run_rust_stages, run_ts_stages, StageContext,
-    StageResults,
-};
+use crate::pipeline::go::run_go_stages;
+use crate::pipeline::js::run_js_stages;
+use crate::pipeline::python::run_python_stages;
+use crate::pipeline::ts::run_ts_stages;
+use crate::pipeline::{run_rust_stages, StageContext, StageResults};
 use anyhow::Result;
 use std::path::Path;
 
