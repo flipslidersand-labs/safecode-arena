@@ -275,7 +275,7 @@ pub fn find_dropped(previous: &HashMap<String, f64>, failed: &[String]) -> Vec<S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{AxisScores, Evaluation, StageOutcome};
+    use crate::model::Evaluation;
 
     /// correctness 軸に score を置いた評価（performance は 0）。
     fn eval(id: &str, score: f64) -> Evaluation {
@@ -293,24 +293,8 @@ mod tests {
 
     fn eval_raw(id: &str, score: f64) -> Evaluation {
         Evaluation {
-            candidate_id: id.into(),
-            compile: StageOutcome::Passed { duration_ms: 1 },
-            test: StageOutcome::Passed { duration_ms: 1 },
-            lint: StageOutcome::Skipped,
-            lint_warnings: 0,
-            prop_test: StageOutcome::Skipped,
-            wasm: StageOutcome::Skipped,
-            wasm_fuel_used: None,
-            mutation: StageOutcome::Skipped,
-            mutation_caught: 0,
-            mutation_total: 0,
-            audit_findings: 0,
-            bench_ns: None,
-            reasoning: StageOutcome::Skipped,
-            reasoning_score: 0.0,
-            reasoning_comment: None,
-            axes: AxisScores::default(),
             score,
+            ..Evaluation::for_test(id)
         }
     }
 
