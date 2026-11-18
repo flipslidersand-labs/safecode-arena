@@ -551,28 +551,13 @@ mod tests {
     }
 
     use super::*;
-    use crate::model::AxisScores;
 
     fn eval(id: &str, score: f64) -> Evaluation {
         Evaluation {
-            candidate_id: id.to_string(),
             compile: StageOutcome::Skipped,
             test: StageOutcome::Skipped,
-            lint: StageOutcome::Skipped,
-            lint_warnings: 0,
-            prop_test: StageOutcome::Skipped,
-            wasm: StageOutcome::Skipped,
-            wasm_fuel_used: None,
-            mutation: StageOutcome::Skipped,
-            mutation_caught: 0,
-            mutation_total: 0,
-            audit_findings: 0,
-            bench_ns: None,
-            reasoning: StageOutcome::Skipped,
-            reasoning_score: 0.0,
-            reasoning_comment: None,
-            axes: AxisScores::default(),
             score,
+            ..Evaluation::for_test(id)
         }
     }
 
