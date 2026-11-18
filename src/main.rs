@@ -12,9 +12,11 @@ use clap::{Parser, Subcommand, ValueEnum};
 use safecode_arena::config::Config;
 use safecode_arena::generator;
 use safecode_arena::model::{Candidate, Language};
-use safecode_arena::session::{check_and_persist, run_options_key, SaveStatus};
+use safecode_arena::session::{
+    check_and_persist, evaluate_all, finalize, run_options_key, Evaluated, SaveStatus,
+};
 use safecode_arena::store::Store;
-use safecode_arena::{pipeline, report, scoring, Evaluation};
+use safecode_arena::{pipeline, report, Evaluation};
 use std::path::Path;
 use std::time::Duration;
 
@@ -208,29 +210,18 @@ fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
 
     // 評価前に全候補を読み込み、未対応拡張子・ID 重複を先に検出する。
     let candidates = pipeline::load_candidates(&args.candidates)?;
-    let mut evals = Vec::with_capacity(candidates.len());
-    let mut rubrics = Vec::with_capacity(candidates.len());
-    let mut failed_ids: Vec<String> = Vec::new();
-    for candidate in &candidates {
-        eprintln!("評価中: {} ...", candidate.id);
-        let rubric = config.rubric_for(candidate.language.name());
-        if let Some(eval) = keep_evaluated(
-            &candidate.id,
-            pipeline::evaluate_candidate(candidate, timeout, &rubric, &eval_opts),
-        ) {
-            evals.push(eval);
-            rubrics.push(rubric);
-        } else {
-            failed_ids.push(candidate.id.clone());
-        }
-    }
+    let Evaluated {
+        evals,
+        rubrics,
+        failed_ids,
+    } = evaluate_all(&candidates, &config, &eval_opts, timeout, |c| {
+        eprintln!("評価中: {} ...", c.id)
+    });
     if evals.is_empty() {
         anyhow::bail!("全候補の評価に失敗しました");
     }
 
-    scoring::assign_performance_each(&mut evals, &rubrics);
-    scoring::assign_reasoning_each(&mut evals, &rubrics);
-    let ranked = scoring::rank(evals);
+    let ranked = finalize(evals, &rubrics);
 
     render_and_write(&ranked, args.format, args.out.as_deref())?;
 
@@ -307,17 +298,6 @@ fn persist_and_report_regressions(
     }
 }
 
-/// 1 候補の評価エラーで全体を止めない。Err は候補 ID 付きで警告して `None` を返す。
-fn keep_evaluated<T>(id: &str, result: anyhow::Result<T>) -> Option<T> {
-    match result {
-        Ok(v) => Some(v),
-        Err(e) => {
-            eprintln!("[warn] {id} の評価失敗: {e:#}");
-            None
-        }
-    }
-}
-
 fn render_and_write(
     ranked: &[Evaluation],
     format: Format,
@@ -364,37 +344,30 @@ fn run_generate(
     }
 
     let timeout = Duration::from_secs(timeout_secs);
-    // generate の候補は常に Rust
-    let rubric = Config::load(config.as_deref())?.rubric_for(Language::Rust.name());
+    // generate の候補は常に Rust（rubric は evaluate_all が言語から引く）
+    let config = Config::load(config.as_deref())?;
 
-    let mut evals = Vec::with_capacity(sources.len());
-    for (i, source) in sources.iter().enumerate() {
-        let id = format!("candidate_{}", i + 1);
-        eprintln!("[evaluate] {} ...", id);
-        let candidate = Candidate {
-            id,
+    let candidates: Vec<Candidate> = sources
+        .iter()
+        .enumerate()
+        .map(|(i, source)| Candidate {
+            id: format!("candidate_{}", i + 1),
             source: source.clone(),
             language: Language::Rust,
-        };
-        evals.extend(keep_evaluated(
-            &candidate.id,
-            pipeline::evaluate_candidate(
-                &candidate,
-                timeout,
-                &rubric,
-                &pipeline::EvalOptions::default(),
-            ),
-        ));
-    }
-
+        })
+        .collect();
+    let Evaluated { evals, rubrics, .. } = evaluate_all(
+        &candidates,
+        &config,
+        &pipeline::EvalOptions::default(),
+        timeout,
+        |c| eprintln!("[evaluate] {} ...", c.id),
+    );
     if evals.is_empty() {
         anyhow::bail!("全候補の評価に失敗しました");
     }
 
-    scoring::assign_performance(&mut evals, &rubric);
-    let rubrics = vec![rubric; evals.len()];
-    scoring::assign_reasoning_each(&mut evals, &rubrics);
-    let ranked = scoring::rank(evals);
+    let ranked = finalize(evals, &rubrics);
 
     render_and_write(&ranked, format, out.as_deref())
 }
@@ -422,15 +395,4 @@ fn run_history(db_path: &str) -> anyhow::Result<()> {
         );
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::keep_evaluated;
-
-    #[test]
-    fn keep_evaluated_passes_ok_and_drops_err() {
-        assert_eq!(keep_evaluated("a", Ok(1)), Some(1));
-        assert_eq!(keep_evaluated::<i32>("b", Err(anyhow::anyhow!("io"))), None);
-    }
 }
