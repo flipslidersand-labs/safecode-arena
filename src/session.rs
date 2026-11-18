@@ -1,8 +1,11 @@
 //! 実行条件キー（実行条件の比較キー）の組み立て。
 
 use crate::config::{Config, Rubric};
+use crate::model::Evaluation;
 use crate::model::{Candidate, Language};
 use crate::pipeline::{self, EvalOptions};
+use crate::store::{find_dropped, find_regressions, Regression, Store};
+use anyhow::Result;
 
 /// スコアに影響する実行条件（比較キーの材料）。
 pub struct RunConditions<'a> {
@@ -95,4 +98,68 @@ pub fn run_options_key(opts: &EvalOptions, cands: &[Candidate], cfg: &Config) ->
             .collect(),
         languages: cands.iter().map(|c| c.language).collect(),
     })
+}
+
+/// 保存の結果。
+#[derive(Debug)]
+pub enum SaveStatus {
+    /// 回帰があったため保存しなかった（比較基準を劣化値に更新しない）。
+    SkippedDueToRegression,
+    /// 保存した run の ID。
+    Saved(i64),
+    /// 保存に失敗した。
+    Failed(anyhow::Error),
+}
+
+/// `check_and_persist` の結果。出力文言は呼び出し側が組み立てる。
+#[derive(Debug)]
+pub struct RegressionOutcome {
+    /// 実行条件が同じ過去 run が無く比較をスキップした（過去 run 自体はある）。
+    pub skipped_incomparable: bool,
+    /// 比較に使った直近の同条件 run。
+    pub baseline_run_id: Option<i64>,
+    pub regressions: Vec<Regression>,
+    /// 前回あったが今回評価失敗で脱落した候補。
+    pub dropped: Vec<String>,
+    pub save: SaveStatus,
+}
+
+impl RegressionOutcome {
+    pub fn has_regression(&self) -> bool {
+        !self.regressions.is_empty() || !self.dropped.is_empty()
+    }
+}
+
+/// 同じ実行条件（`options`）の直近 run と比較して回帰を判定し、回帰が無ければ run を保存する。
+/// 条件が同じ run が無ければ比較をスキップする。DB 読み出しの失敗は `Err`、保存の失敗は `SaveStatus::Failed`。
+pub fn check_and_persist(
+    store: &mut Store,
+    ranked: &[Evaluation],
+    failed_ids: &[String],
+    threshold: f64,
+    options: &str,
+    created_at: &str,
+) -> Result<RegressionOutcome> {
+    let baseline = store.latest_run_id_matching(options)?;
+    let skipped_incomparable = baseline.is_none() && store.latest_run_id()?.is_some();
+    let (mut regressions, mut dropped) = (Vec::new(), Vec::new());
+    if let Some(prev_id) = baseline {
+        let prev = store.run_comparable_scores(prev_id)?;
+        regressions = find_regressions(&prev, ranked, threshold);
+        dropped = find_dropped(&prev, failed_ids);
+    }
+    let mut out = RegressionOutcome {
+        skipped_incomparable,
+        baseline_run_id: baseline,
+        regressions,
+        dropped,
+        save: SaveStatus::SkippedDueToRegression,
+    };
+    if !out.has_regression() {
+        out.save = match store.save_run(created_at, options, ranked) {
+            Ok(id) => SaveStatus::Saved(id),
+            Err(e) => SaveStatus::Failed(e),
+        };
+    }
+    Ok(out)
 }

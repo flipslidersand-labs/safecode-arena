@@ -191,7 +191,7 @@ pub(crate) struct StageContext<'a> {
 }
 
 /// 言語ごとに対応する `EvalOptions` の機能（`run_*_stages` が受け取る引数に対応）。
-/// 実行条件キー（`main.rs` の `run_options_key`）と警告の両方がここを参照する。
+/// 実行条件キー（`src/session.rs` の `run_options_key`）と警告の両方がここを参照する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capabilities {
     pub mutation: bool,
