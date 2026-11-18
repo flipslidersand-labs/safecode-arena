@@ -171,6 +171,8 @@ pub struct EvalOptions<'a> {
     pub run_llm_review: bool,
     /// LLM レビュー取得関数 `(source, test_passed) -> Option<LlmReview>`。
     /// `run_llm_review` が true のときだけ呼ばれる。`None` なら未取得扱い。
+    /// `None` のときは `run_llm_review` が true でもレビューを呼ばない
+    /// (以前は `llm::review` を直接呼んでいた。ライブラリ利用側は reviewer を渡すこと)。
     /// 実行条件キーには影響しない。
     pub reviewer: Option<&'a Reviewer<'a>>,
 }
