@@ -1,5 +1,6 @@
 //! Python 候補のステージ (py_compile / pytest / ruff / mutmut)。
 
+use super::common::parse_mutation_json;
 use super::*;
 
 /// Python 候補: py_compile（構文チェック）→ pytest → ruff。
@@ -98,20 +99,7 @@ fn run_python_mutation(root: &Path, timeout: Duration) -> (StageOutcome, usize, 
 
 /// mutmut JSON 出力から (caught, total_mutants) を取り出す。
 fn parse_mutmut_json(stdout: &str) -> Option<(usize, usize)> {
-    #[derive(serde::Deserialize)]
-    struct MutmutOutput {
-        total_mutants: usize,
-        caught: usize,
-    }
-    for line in stdout.lines().rev() {
-        let line = line.trim();
-        if line.starts_with('{') {
-            if let Ok(m) = serde_json::from_str::<MutmutOutput>(line) {
-                return Some((m.caught, m.total_mutants));
-            }
-        }
-    }
-    None
+    parse_mutation_json(stdout)
 }
 
 /// `ruff` が PATH に存在するか確認する。

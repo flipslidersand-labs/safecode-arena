@@ -1,5 +1,6 @@
 //! Rust 候補のステージ (compile / test / clippy / Wasm / mutation / audit / bench)。
 
+use super::common::parse_mutation_json;
 use super::*;
 
 /// Wasm ステージのターゲット。
@@ -350,21 +351,7 @@ pub(super) fn run_rust_mutation(root: &Path, timeout: Duration) -> (StageOutcome
 
 /// `cargo mutants --json` の出力から (caught, total_mutants) を取り出す。
 pub(super) fn parse_mutants_json(stdout: &str) -> Option<(usize, usize)> {
-    #[derive(serde::Deserialize)]
-    struct MutantsOutput {
-        total_mutants: usize,
-        caught: usize,
-    }
-    // stdout の最後の JSON 行を探す（進捗ログが混在する場合があるため）
-    for line in stdout.lines().rev() {
-        let line = line.trim();
-        if line.starts_with('{') {
-            if let Ok(m) = serde_json::from_str::<MutantsOutput>(line) {
-                return Some((m.caught, m.total_mutants));
-            }
-        }
-    }
-    None
+    parse_mutation_json(stdout)
 }
 
 /// `cargo audit --json` で Rust 候補の脆弱性をスキャンし、検出件数を返す。

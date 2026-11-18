@@ -7,6 +7,23 @@ pub(super) fn eslint_available() -> bool {
     tool_available("eslint", &["--version"])
 }
 
+/// ESLint を `file` に対して実行し (lint 結果, 警告数) を返す。ESLint が無ければ Skipped。
+pub(super) fn run_eslint(root: &Path, file: &str, timeout: Duration) -> (StageOutcome, usize) {
+    if !eslint_available() {
+        return (StageOutcome::Skipped, 0);
+    }
+    let mut l = Command::new("sh");
+    l.arg("-c").arg(eslint_cmd(file)).current_dir(root);
+    let (outcome, out, truncated) = runner::run_stage_capture_flagged("eslint", l, timeout);
+    lint_outcome(
+        outcome,
+        &out,
+        truncated,
+        eslint_run_failed,
+        count_eslint_findings,
+    )
+}
+
 /// ESLint の出力が「実行失敗」(設定なし・未知オプション・フォーマッタ欠落)を示すか判定する純関数。
 ///
 /// `eslint ... 2>&1; true` は終了コードを捨てるため、失敗が「指摘 0 件」に化けるのを防ぐ (#152)。
@@ -92,22 +109,7 @@ pub(crate) fn run_js_stages(
     };
 
     // lint: ESLint があれば設定ファイルなし + 最小ルールで実行
-    let (lint, lint_warnings) = if eslint_available() {
-        let mut l = Command::new("sh");
-        l.arg("-c")
-            .arg(eslint_cmd("candidate.js"))
-            .current_dir(root);
-        let (outcome, out, truncated) = runner::run_stage_capture_flagged("eslint", l, timeout);
-        lint_outcome(
-            outcome,
-            &out,
-            truncated,
-            eslint_run_failed,
-            count_eslint_findings,
-        )
-    } else {
-        (StageOutcome::Skipped, 0)
-    };
+    let (lint, lint_warnings) = run_eslint(root, "candidate.js", timeout);
 
     Ok(StageResults {
         compile,
