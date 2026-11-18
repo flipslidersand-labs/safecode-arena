@@ -202,6 +202,7 @@ fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
         },
         run_mutation: args.mutation,
         run_llm_review: args.llm_review,
+        reviewer: Some(&safecode_arena::llm::review),
     };
 
     // 評価前に全候補を読み込み、未対応拡張子・ID 重複を先に検出する。

@@ -169,7 +169,14 @@ pub struct EvalOptions<'a> {
     pub wasm_opts: WasmOptions<'a>,
     pub run_mutation: bool,
     pub run_llm_review: bool,
+    /// LLM レビュー取得関数 `(source, test_passed) -> Option<LlmReview>`。
+    /// `run_llm_review` が true のときだけ呼ばれる。`None` なら未取得扱い。
+    /// 実行条件キーには影響しない。
+    pub reviewer: Option<&'a Reviewer<'a>>,
 }
+
+/// LLM レビューを取得する関数の型（`crate::llm::review` が本番実装）。
+pub type Reviewer<'a> = dyn Fn(&str, bool) -> Option<crate::llm::LlmReview> + 'a;
 
 /// `run_*_stages` に共通で渡す実行コンテキスト。言語が使わない項目は無視される。
 #[derive(Clone, Copy)]
@@ -262,14 +269,13 @@ pub fn evaluate_candidate(
     let results = crate::language::runner_for(candidate.language).run(root, candidate, &ctx)?;
 
     // LLM セマンティックレビュー（オプション）
-    let (reasoning_score, reasoning_comment) = if opts.run_llm_review {
-        let test_passed = results.test.is_passed();
-        match crate::llm::review(&candidate.source, test_passed) {
-            Some(r) => (Some(r.score), Some(r.comment)),
-            None => (None, None),
-        }
-    } else {
-        (None, None)
+    let review = match (opts.run_llm_review, opts.reviewer) {
+        (true, Some(f)) => f(&candidate.source, results.test.is_passed()),
+        _ => None,
+    };
+    let (reasoning_score, reasoning_comment) = match review {
+        Some(r) => (Some(r.score), Some(r.comment)),
+        None => (None, None),
     };
 
     let results = StageResults {
