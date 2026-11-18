@@ -269,7 +269,7 @@ fn run_wasm_stage(
 /// 各検証ステージの生結果。言語ごとのランナーが埋め、`assemble` が採点する。
 /// `lint` / `lint_warnings` は Rust では cargo clippy、Python では ruff を指す
 ///
-struct StageResults {
+pub(crate) struct StageResults {
     compile: StageOutcome,
     test: StageOutcome,
     lint: StageOutcome,
@@ -330,7 +330,7 @@ pub struct EvalOptions<'a> {
 
 /// `run_*_stages` に共通で渡す実行コンテキスト。言語が使わない項目は無視される。
 #[derive(Clone, Copy)]
-struct StageContext<'a> {
+pub(crate) struct StageContext<'a> {
     timeout: Duration,
     tests_dir: Option<&'a Path>,
     prop_tests_dir: Option<&'a Path>,
@@ -416,13 +416,7 @@ pub fn evaluate_candidate(
         wasm_opts: &opts.wasm_opts,
         run_mutation: opts.run_mutation,
     };
-    let results = match candidate.language {
-        Language::Rust => run_rust_stages(root, candidate, &ctx)?,
-        Language::Python => run_python_stages(root, candidate, &ctx)?,
-        Language::Go => run_go_stages(root, candidate, &ctx)?,
-        Language::JavaScript => run_js_stages(root, candidate, &ctx)?,
-        Language::TypeScript => run_ts_stages(root, candidate, &ctx)?,
-    };
+    let results = crate::language::runner_for(candidate.language).run(root, candidate, &ctx)?;
 
     // LLM セマンティックレビュー（オプション）
     let (reasoning_score, reasoning_comment) = if opts.run_llm_review {
@@ -589,7 +583,11 @@ fn rust_build_args(is_bench: bool) -> &'static [&'static str] {
 }
 
 /// Rust 候補: 一時 Cargo プロジェクトで compile → test → lint(clippy) → prop_test → wasm → mutation。
-fn run_rust_stages(root: &Path, candidate: &Candidate, ctx: &StageContext) -> Result<StageResults> {
+pub(crate) fn run_rust_stages(
+    root: &Path,
+    candidate: &Candidate,
+    ctx: &StageContext,
+) -> Result<StageResults> {
     let StageContext {
         timeout,
         tests_dir,
@@ -744,7 +742,7 @@ fn parse_mutants_json(stdout: &str) -> Option<(usize, usize)> {
 
 /// Python 候補: py_compile（構文チェック）→ pytest → ruff。
 /// prop_test / wasm は非対応のため Skipped。
-fn run_python_stages(
+pub(crate) fn run_python_stages(
     root: &Path,
     candidate: &Candidate,
     ctx: &StageContext,
@@ -935,7 +933,11 @@ fn go_lint_run_failed(output: &str) -> bool {
 
 /// Go 候補: 一時モジュールで go build → go test → staticcheck（なければ go vet）。
 /// prop_test / wasm は非対応のため Skipped。
-fn run_go_stages(root: &Path, candidate: &Candidate, ctx: &StageContext) -> Result<StageResults> {
+pub(crate) fn run_go_stages(
+    root: &Path,
+    candidate: &Candidate,
+    ctx: &StageContext,
+) -> Result<StageResults> {
     let StageContext {
         timeout,
         tests_dir,
@@ -1142,7 +1144,11 @@ fn test_verdict_failure(lang: Language, output: &str, go_has_tests: bool) -> Opt
 
 /// JavaScript 候補: node --check（構文検証）→ node --test → ESLint（あれば）。
 /// prop_test / wasm は非対応のため Skipped。
-fn run_js_stages(root: &Path, candidate: &Candidate, ctx: &StageContext) -> Result<StageResults> {
+pub(crate) fn run_js_stages(
+    root: &Path,
+    candidate: &Candidate,
+    ctx: &StageContext,
+) -> Result<StageResults> {
     let StageContext {
         timeout, tests_dir, ..
     } = *ctx;
@@ -1204,7 +1210,11 @@ fn tsc_available() -> bool {
 /// TypeScript 候補: tsc --noEmit（型検査）→ tsc + node --test（テスト）→ ESLint（あれば）。
 /// prop_test / wasm / mutation は非対応のため Skipped。
 /// `tsc` が PATH にない場合はコンパイル Skipped（減点なし）。
-fn run_ts_stages(root: &Path, candidate: &Candidate, ctx: &StageContext) -> Result<StageResults> {
+pub(crate) fn run_ts_stages(
+    root: &Path,
+    candidate: &Candidate,
+    ctx: &StageContext,
+) -> Result<StageResults> {
     let StageContext {
         timeout, tests_dir, ..
     } = *ctx;
