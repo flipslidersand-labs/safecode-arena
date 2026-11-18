@@ -328,6 +328,62 @@ pub struct EvalOptions<'a> {
     pub run_llm_review: bool,
 }
 
+/// 言語ごとに対応する `EvalOptions` の機能（`run_*_stages` が受け取る引数に対応）。
+/// 実行条件キー（`main.rs` の `run_options_key`）と警告の両方がここを参照する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Capabilities {
+    pub mutation: bool,
+    pub prop_tests: bool,
+    pub wasm: bool,
+}
+
+/// 言語が対応するオプションの一覧表（唯一の定義箇所）。
+pub fn capabilities(lang: Language) -> Capabilities {
+    match lang {
+        Language::Rust => Capabilities {
+            mutation: true,
+            prop_tests: true,
+            wasm: true,
+        },
+        Language::Python | Language::Go => Capabilities {
+            mutation: true,
+            prop_tests: false,
+            wasm: false,
+        },
+        Language::JavaScript | Language::TypeScript => Capabilities {
+            mutation: false,
+            prop_tests: false,
+            wasm: false,
+        },
+    }
+}
+
+/// 指定されたが候補の言語が対応せず無視されるオプションの警告文を返す。
+pub fn ignored_option_warnings(candidate: &Candidate, opts: &EvalOptions) -> Vec<String> {
+    let cap = capabilities(candidate.language);
+    let mut ignored = Vec::new();
+    if opts.run_mutation && !cap.mutation {
+        ignored.push("--mutation");
+    }
+    if opts.prop_tests_dir.is_some() && !cap.prop_tests {
+        ignored.push("--prop-tests");
+    }
+    if opts.wasm_opts.entry.is_some() && !cap.wasm {
+        ignored.push("--wasm-entry");
+    }
+    ignored
+        .into_iter()
+        .map(|o| {
+            format!(
+                "警告: {} ({}) は {} に対応しないため無視します",
+                candidate.id,
+                candidate.language.name(),
+                o
+            )
+        })
+        .collect()
+}
+
 /// 1 候補を一時ディレクトリへ展開し、言語に応じた検証ステージを実行して採点する。
 ///
 /// compile が通らなかった場合、後続ステージはすべて `Skipped`。
@@ -337,6 +393,9 @@ pub fn evaluate_candidate(
     rubric: &Rubric,
     opts: &EvalOptions,
 ) -> Result<Evaluation> {
+    for w in ignored_option_warnings(candidate, opts) {
+        eprintln!("{w}");
+    }
     let dir = tempfile::tempdir().context("一時ディレクトリの生成に失敗")?;
     let root = dir.path();
 
@@ -2561,5 +2620,58 @@ mod tool_available_tests {
             "definitely-not-a-real-tool-xyz",
             &["--version"]
         ));
+    }
+}
+
+#[cfg(test)]
+mod ignored_option_tests {
+    use super::*;
+
+    fn cand(lang: Language) -> Candidate {
+        Candidate {
+            id: "c1".into(),
+            source: String::new(),
+            language: lang,
+        }
+    }
+
+    fn loud<'a>(p: &'a Path) -> EvalOptions<'a> {
+        EvalOptions {
+            prop_tests_dir: Some(p),
+            wasm_opts: WasmOptions {
+                entry: Some("run"),
+                ..Default::default()
+            },
+            run_mutation: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn js_warns_for_all_unsupported_options() {
+        let p = Path::new("x");
+        let w = ignored_option_warnings(&cand(Language::JavaScript), &loud(p));
+        assert_eq!(w.len(), 3);
+        assert!(w.iter().any(|m| m.contains("--mutation")));
+        assert!(w.iter().any(|m| m.contains("--prop-tests")));
+        assert!(w.iter().any(|m| m.contains("--wasm-entry")));
+    }
+
+    #[test]
+    fn python_warns_only_for_prop_tests_and_wasm() {
+        let p = Path::new("x");
+        let w = ignored_option_warnings(&cand(Language::Python), &loud(p));
+        assert_eq!(w.len(), 2);
+        assert!(!w.iter().any(|m| m.contains("--mutation")));
+    }
+
+    #[test]
+    fn rust_and_unset_options_do_not_warn() {
+        let p = Path::new("x");
+        assert!(ignored_option_warnings(&cand(Language::Rust), &loud(p)).is_empty());
+        assert!(
+            ignored_option_warnings(&cand(Language::TypeScript), &EvalOptions::default())
+                .is_empty()
+        );
     }
 }
