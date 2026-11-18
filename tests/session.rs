@@ -169,6 +169,7 @@ fn derived_key_matches_manual_conditions() {
         },
         run_mutation: true,
         run_llm_review: false,
+        reviewer: None,
     };
     let manual = conditions_key(&RunConditions {
         llm_review: false,
