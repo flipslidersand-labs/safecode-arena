@@ -4,8 +4,10 @@ use crate::config::{Config, Rubric};
 use crate::model::Evaluation;
 use crate::model::{Candidate, Language};
 use crate::pipeline::{self, EvalOptions};
+use crate::scoring;
 use crate::store::{find_dropped, find_regressions, Regression, Store};
 use anyhow::Result;
+use std::time::Duration;
 
 /// スコアに影響する実行条件（比較キーの材料）。
 pub struct RunConditions<'a> {
@@ -162,4 +164,61 @@ pub fn check_and_persist(
         };
     }
     Ok(out)
+}
+
+/// 1 候補の評価エラーで全体を止めない。Err は候補 ID 付きで警告して `None` を返す。
+pub fn keep_evaluated<T>(id: &str, result: Result<T>) -> Option<T> {
+    match result {
+        Ok(v) => Some(v),
+        Err(e) => {
+            eprintln!("[warn] {id} の評価失敗: {e:#}");
+            None
+        }
+    }
+}
+
+/// `evaluate_all` の結果。`evals` と `rubrics` は同じ長さ・同じ順序（成功した候補のみ）。
+pub struct Evaluated {
+    pub evals: Vec<Evaluation>,
+    pub rubrics: Vec<Rubric>,
+    /// 評価に失敗して脱落した候補 ID。
+    pub failed_ids: Vec<String>,
+}
+
+/// 全候補を順に評価する。各候補の評価前に `on_start` を呼ぶ（進捗表示は呼び出し側）。
+/// rubric は候補の言語ごとに `config` から引く。1 候補の失敗は警告して脱落させる。
+pub fn evaluate_all(
+    candidates: &[Candidate],
+    config: &Config,
+    opts: &EvalOptions,
+    timeout: Duration,
+    mut on_start: impl FnMut(&Candidate),
+) -> Evaluated {
+    let mut out = Evaluated {
+        evals: Vec::with_capacity(candidates.len()),
+        rubrics: Vec::with_capacity(candidates.len()),
+        failed_ids: Vec::new(),
+    };
+    for candidate in candidates {
+        on_start(candidate);
+        let rubric = config.rubric_for(candidate.language.name());
+        match keep_evaluated(
+            &candidate.id,
+            pipeline::evaluate_candidate(candidate, timeout, &rubric, opts),
+        ) {
+            Some(eval) => {
+                out.evals.push(eval);
+                out.rubrics.push(rubric);
+            }
+            None => out.failed_ids.push(candidate.id.clone()),
+        }
+    }
+    out
+}
+
+/// performance・reasoning を付与し、スコア降順に並べる。`rubrics[i]` が `evals[i]` の配点。
+pub fn finalize(mut evals: Vec<Evaluation>, rubrics: &[Rubric]) -> Vec<Evaluation> {
+    scoring::assign_performance_each(&mut evals, rubrics);
+    scoring::assign_reasoning_each(&mut evals, rubrics);
+    scoring::rank(evals)
 }
