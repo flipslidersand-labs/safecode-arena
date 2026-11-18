@@ -97,24 +97,32 @@ pub(crate) fn from_extension(ext: &str) -> Option<Language> {
 mod tests {
     use super::*;
 
-    /// 新しい variant を足すとこの match がコンパイルエラーになり、登録漏れに気づける。
+    /// 全 variant を列挙する網羅 match。variant を足すとここでコンパイルが落ちる。
+    fn ordinal(l: Language) -> usize {
+        match l {
+            Language::Rust => 0,
+            Language::Python => 1,
+            Language::Go => 2,
+            Language::JavaScript => 3,
+            Language::TypeScript => 4,
+        }
+    }
+
     fn all_languages() -> [Language; 5] {
-        let check = |l: Language| match l {
-            Language::Rust
-            | Language::Python
-            | Language::Go
-            | Language::JavaScript
-            | Language::TypeScript => (),
-        };
-        let all = [
+        [
             Language::Rust,
             Language::Python,
             Language::Go,
             Language::JavaScript,
             Language::TypeScript,
-        ];
-        all.iter().for_each(|l| check(*l));
-        all
+        ]
+    }
+
+    #[test]
+    fn all_languages_lists_every_variant() {
+        let mut ords: Vec<usize> = all_languages().into_iter().map(ordinal).collect();
+        ords.sort_unstable();
+        assert_eq!(ords, (0..all_languages().len()).collect::<Vec<_>>());
     }
 
     #[test]
