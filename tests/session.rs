@@ -146,7 +146,7 @@ fn mixed_run_with_rust_keeps_rust_options() {
 
 #[test]
 fn derived_key_matches_manual_conditions() {
-    let cfg = Config::load(None).unwrap();
+    let cfg = Config::default();
     let cands = vec![
         Candidate {
             id: "a".into(),

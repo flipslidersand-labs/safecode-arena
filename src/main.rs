@@ -428,7 +428,6 @@ fn run_history(db_path: &str) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-#[cfg(test)]
 mod tests {
     use super::keep_evaluated;
 
