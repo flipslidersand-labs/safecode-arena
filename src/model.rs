@@ -14,29 +14,18 @@ pub enum Language {
 }
 
 impl Language {
-    /// 対応している拡張子（小文字）。
+    /// 対応している拡張子（小文字）。`language::RUNNERS` の `extensions()` と
+    /// 一致することをテストで担保する。
     pub const SUPPORTED_EXTENSIONS: [&'static str; 5] = ["rs", "py", "go", "js", "ts"];
 
     /// ファイル拡張子から言語を判定する。未知の拡張子は `None`。
+    /// 言語の列挙は `crate::language` のレジストリが持つ。
     pub fn try_from_extension(ext: &str) -> Option<Language> {
-        match ext.to_ascii_lowercase().as_str() {
-            "rs" => Some(Language::Rust),
-            "py" => Some(Language::Python),
-            "go" => Some(Language::Go),
-            "js" => Some(Language::JavaScript),
-            "ts" => Some(Language::TypeScript),
-            _ => None,
-        }
+        crate::language::from_extension(ext)
     }
 
     pub fn name(&self) -> &'static str {
-        match self {
-            Language::Rust => "rust",
-            Language::Python => "python",
-            Language::Go => "go",
-            Language::JavaScript => "javascript",
-            Language::TypeScript => "typescript",
-        }
+        crate::language::runner_for(*self).name()
     }
 }
 
