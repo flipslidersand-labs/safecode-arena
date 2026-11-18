@@ -142,3 +142,23 @@ pub(super) fn floor_if_truncated(count: usize, truncated: bool) -> usize {
         count
     }
 }
+
+/// mutation ツール (cargo mutants / mutmut) の JSON 出力から (caught, total_mutants) を取り出す。
+///
+/// stdout の最後の JSON 行を探す（進捗ログが混在する場合があるため）。
+pub(super) fn parse_mutation_json(stdout: &str) -> Option<(usize, usize)> {
+    #[derive(serde::Deserialize)]
+    struct MutationOutput {
+        total_mutants: usize,
+        caught: usize,
+    }
+    for line in stdout.lines().rev() {
+        let line = line.trim();
+        if line.starts_with('{') {
+            if let Ok(m) = serde_json::from_str::<MutationOutput>(line) {
+                return Some((m.caught, m.total_mutants));
+            }
+        }
+    }
+    None
+}
