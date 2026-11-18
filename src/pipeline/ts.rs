@@ -1,6 +1,6 @@
 //! TypeScript 候補のステージ (tsc / node --test / ESLint)。
 
-use super::js::{eslint_available, eslint_cmd, eslint_run_failed, NODE_ISOLATION_PROBE};
+use super::js::{run_eslint, NODE_ISOLATION_PROBE};
 use super::*;
 
 /// `tsc` が PATH に存在するか確認する。
@@ -63,22 +63,7 @@ pub(crate) fn run_ts_stages(
     };
 
     // lint: ESLint があれば TypeScript 向けルールで実行
-    let (lint, lint_warnings) = if eslint_available() {
-        let mut l = Command::new("sh");
-        l.arg("-c")
-            .arg(eslint_cmd("candidate.ts"))
-            .current_dir(root);
-        let (outcome, out, truncated) = runner::run_stage_capture_flagged("eslint", l, timeout);
-        lint_outcome(
-            outcome,
-            &out,
-            truncated,
-            eslint_run_failed,
-            count_eslint_findings,
-        )
-    } else {
-        (StageOutcome::Skipped, 0)
-    };
+    let (lint, lint_warnings) = run_eslint(root, "candidate.ts", timeout);
 
     Ok(StageResults {
         compile,
