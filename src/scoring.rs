@@ -423,24 +423,9 @@ mod tests {
     fn performance_is_relative_fastest_wins() {
         let r = Rubric::default();
         let mk = |id: &str, c: u64, t: u64| Evaluation {
-            candidate_id: id.into(),
             compile: passed(c),
             test: passed(t),
-            lint: StageOutcome::Skipped,
-            lint_warnings: 0,
-            prop_test: StageOutcome::Skipped,
-            wasm: StageOutcome::Skipped,
-            wasm_fuel_used: None,
-            mutation: StageOutcome::Skipped,
-            mutation_caught: 0,
-            mutation_total: 0,
-            audit_findings: 0,
-            bench_ns: None,
-            reasoning: StageOutcome::Skipped,
-            reasoning_score: 0.0,
-            reasoning_comment: None,
-            axes: AxisScores::default(),
-            score: 0.0,
+            ..Evaluation::for_test(id)
         };
         let mut evals = vec![mk("fast", 10, 10), mk("slow", 30, 30)];
         assign_performance(&mut evals, &r);
@@ -453,24 +438,9 @@ mod tests {
     fn performance_zero_when_not_compiled() {
         let r = Rubric::default();
         let mut evals = vec![Evaluation {
-            candidate_id: "ng".into(),
             compile: failed(),
             test: StageOutcome::Skipped,
-            lint: StageOutcome::Skipped,
-            lint_warnings: 0,
-            prop_test: StageOutcome::Skipped,
-            wasm: StageOutcome::Skipped,
-            wasm_fuel_used: None,
-            mutation: StageOutcome::Skipped,
-            mutation_caught: 0,
-            mutation_total: 0,
-            audit_findings: 0,
-            bench_ns: None,
-            reasoning: StageOutcome::Skipped,
-            reasoning_score: 0.0,
-            reasoning_comment: None,
-            axes: AxisScores::default(),
-            score: 0.0,
+            ..Evaluation::for_test("ng")
         }];
         assign_performance(&mut evals, &r);
         assert_eq!(evals[0].axes.performance, 0.0);
@@ -479,24 +449,10 @@ mod tests {
     #[test]
     fn rank_orders_by_score_desc() {
         let mk = |id: &str, s: f64| Evaluation {
-            candidate_id: id.into(),
             compile: passed(1),
             test: passed(1),
-            lint: StageOutcome::Skipped,
-            lint_warnings: 0,
-            prop_test: StageOutcome::Skipped,
-            wasm: StageOutcome::Skipped,
-            wasm_fuel_used: None,
-            mutation: StageOutcome::Skipped,
-            mutation_caught: 0,
-            mutation_total: 0,
-            audit_findings: 0,
-            bench_ns: None,
-            reasoning: StageOutcome::Skipped,
-            reasoning_score: 0.0,
-            reasoning_comment: None,
-            axes: AxisScores::default(),
             score: s,
+            ..Evaluation::for_test(id)
         };
         let ranked = rank(vec![mk("a", 25.0), mk("b", 50.0), mk("c", 0.0)]);
         let ids: Vec<_> = ranked.iter().map(|e| e.candidate_id.as_str()).collect();
@@ -591,24 +547,10 @@ mod tests {
         let r = Rubric::default();
         let mk = |id: &str, bench: Option<u64>, c: u64, t: u64| {
             let mut e = Evaluation {
-                candidate_id: id.into(),
                 compile: passed(c),
                 test: passed(t),
-                lint: StageOutcome::Skipped,
-                lint_warnings: 0,
-                prop_test: StageOutcome::Skipped,
-                wasm: StageOutcome::Skipped,
-                wasm_fuel_used: None,
-                mutation: StageOutcome::Skipped,
-                mutation_caught: 0,
-                mutation_total: 0,
-                audit_findings: 0,
                 bench_ns: bench,
-                reasoning: StageOutcome::Skipped,
-                reasoning_score: 0.0,
-                reasoning_comment: None,
-                axes: AxisScores::default(),
-                score: 0.0,
+                ..Evaluation::for_test(id)
             };
             e.axes = AxisScores::default();
             e
@@ -629,24 +571,10 @@ mod tests {
     fn bench_path_ignores_candidates_that_failed_test() {
         let r = Rubric::default();
         let mk = |id: &str, bench: u64, test: StageOutcome| Evaluation {
-            candidate_id: id.into(),
             compile: passed(1),
             test,
-            lint: StageOutcome::Skipped,
-            lint_warnings: 0,
-            prop_test: StageOutcome::Skipped,
-            wasm: StageOutcome::Skipped,
-            wasm_fuel_used: None,
-            mutation: StageOutcome::Skipped,
-            mutation_caught: 0,
-            mutation_total: 0,
-            audit_findings: 0,
             bench_ns: Some(bench),
-            reasoning: StageOutcome::Skipped,
-            reasoning_score: 0.0,
-            reasoning_comment: None,
-            axes: AxisScores::default(),
-            score: 0.0,
+            ..Evaluation::for_test(id)
         };
         // broken: テスト失敗だが bench は最速。ok: テスト成功。
         let mut evals = vec![mk("broken", 10, failed()), mk("ok", 1000, passed(1))];
@@ -720,24 +648,9 @@ mod tests {
 
     fn perf_eval(ms: u64) -> Evaluation {
         Evaluation {
-            candidate_id: "c".into(),
             compile: passed(ms),
             test: passed(0),
-            lint: StageOutcome::Skipped,
-            lint_warnings: 0,
-            prop_test: StageOutcome::Skipped,
-            wasm: StageOutcome::Skipped,
-            wasm_fuel_used: None,
-            mutation: StageOutcome::Skipped,
-            mutation_caught: 0,
-            mutation_total: 0,
-            audit_findings: 0,
-            bench_ns: None,
-            reasoning: StageOutcome::Skipped,
-            reasoning_score: 0.0,
-            reasoning_comment: None,
-            axes: AxisScores::default(),
-            score: 0.0,
+            ..Evaluation::for_test("c")
         }
     }
 

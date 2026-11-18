@@ -128,6 +128,34 @@ pub struct Evaluation {
     pub score: f64,
 }
 
+impl Evaluation {
+    /// テスト用の既定値（compile / test は Passed 1ms、他は Skipped・0・None）。
+    /// 本番コードからは呼ばない。`tests/` からも使うため `cfg(test)` は付けない。
+    #[doc(hidden)]
+    pub fn for_test(id: &str) -> Evaluation {
+        Evaluation {
+            candidate_id: id.into(),
+            compile: StageOutcome::Passed { duration_ms: 1 },
+            test: StageOutcome::Passed { duration_ms: 1 },
+            lint: StageOutcome::Skipped,
+            lint_warnings: 0,
+            prop_test: StageOutcome::Skipped,
+            wasm: StageOutcome::Skipped,
+            wasm_fuel_used: None,
+            mutation: StageOutcome::Skipped,
+            mutation_caught: 0,
+            mutation_total: 0,
+            audit_findings: 0,
+            bench_ns: None,
+            reasoning: StageOutcome::Skipped,
+            reasoning_score: 0.0,
+            reasoning_comment: None,
+            axes: AxisScores::default(),
+            score: 0.0,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
