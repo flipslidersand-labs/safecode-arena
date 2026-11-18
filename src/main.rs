@@ -12,8 +12,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use safecode_arena::config::Config;
 use safecode_arena::generator;
 use safecode_arena::model::{Candidate, Language};
-use safecode_arena::session::run_options_key;
-use safecode_arena::store::{self, Store};
+use safecode_arena::session::{check_and_persist, run_options_key, SaveStatus};
+use safecode_arena::store::Store;
 use safecode_arena::{pipeline, report, scoring, Evaluation};
 use std::path::Path;
 use std::time::Duration;
@@ -252,8 +252,7 @@ fn run_evaluate(args: EvaluateArgs) -> anyhow::Result<()> {
 }
 
 /// 現在の評価を保存する前に、実行条件（`options`）が同じ直近 run と比較し、後退した候補を stderr に警告する。
-/// 条件が同じ run が無ければ比較をスキップする（条件違いのスコア差を回帰と誤検出しないため）。
-/// リグレッションがあれば run は保存しない（基準を劣化値に更新しないため）。
+/// 判定と保存は `session::check_and_persist`。ここでは結果の出力と終了コードの判断だけを行う。
 /// リグレッションが 1 件以上あれば `true` を返す。
 fn persist_and_report_regressions(
     db_path: &str,
@@ -263,31 +262,26 @@ fn persist_and_report_regressions(
     options: &str,
 ) -> anyhow::Result<bool> {
     let mut s = Store::open(Path::new(db_path))?;
-    let mut has_regression = false;
+    let created_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let out = check_and_persist(&mut s, ranked, failed_ids, threshold, options, &created_at)?;
 
-    let baseline = s.latest_run_id_matching(options)?;
-    if baseline.is_none() && s.latest_run_id()?.is_some() {
+    if out.skipped_incomparable {
         eprintln!("⚠️  実行条件が同じ過去 run がないため比較をスキップ（今回: {options}）");
     }
-    if let Some(prev_id) = baseline {
-        let prev = s.run_comparable_scores(prev_id)?;
-        let regs = store::find_regressions(&prev, ranked, threshold);
-        let dropped = store::find_dropped(&prev, failed_ids);
-        if !dropped.is_empty() {
-            has_regression = true;
+    if let Some(prev_id) = out.baseline_run_id {
+        if !out.dropped.is_empty() {
             eprintln!("⚠️  前回 run #{prev_id} にあった候補が評価失敗で脱落:");
-            for id in &dropped {
+            for id in &out.dropped {
                 eprintln!("  - {id}");
             }
         }
-        if regs.is_empty() {
-            if dropped.is_empty() {
+        if out.regressions.is_empty() {
+            if out.dropped.is_empty() {
                 eprintln!("リグレッションなし（直近 run #{prev_id} と比較、performance・reasoning 軸を除く）");
             }
         } else {
-            has_regression = true;
             eprintln!("⚠️  リグレッション検出（直近 run #{prev_id} 比）:");
-            for r in &regs {
+            for r in &out.regressions {
                 eprintln!(
                     "  - {}: {:.1} → {:.1}（{:+.1}）",
                     r.candidate_id,
@@ -299,16 +293,18 @@ fn persist_and_report_regressions(
         }
     }
 
-    if has_regression {
-        // 劣化 run を保存すると次回の比較基準が下がり、再実行で回帰が見逃される。
-        eprintln!("リグレッション検出のため run を保存しません（基準を維持）");
-        return Ok(true);
+    match out.save {
+        SaveStatus::SkippedDueToRegression => {
+            // 劣化 run を保存すると次回の比較基準が下がり、再実行で回帰が見逃される。
+            eprintln!("リグレッション検出のため run を保存しません（基準を維持）");
+            Ok(true)
+        }
+        SaveStatus::Saved(run_id) => {
+            eprintln!("run #{run_id} を保存しました: {db_path}");
+            Ok(false)
+        }
+        SaveStatus::Failed(e) => Err(e),
     }
-
-    let created_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let run_id = s.save_run(&created_at, options, ranked)?;
-    eprintln!("run #{run_id} を保存しました: {db_path}");
-    Ok(has_regression)
 }
 
 /// 1 候補の評価エラーで全体を止めない。Err は候補 ID 付きで警告して `None` を返す。
