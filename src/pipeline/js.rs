@@ -114,8 +114,10 @@ pub(crate) fn run_js_stages(
     Ok(StageResults {
         compile,
         test,
-        lint,
-        lint_warnings,
+        lint: LintResult {
+            outcome: lint,
+            warnings: lint_warnings,
+        },
         ..Default::default()
     })
 }
