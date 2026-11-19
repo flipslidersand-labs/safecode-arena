@@ -90,28 +90,49 @@ impl AxisScores {
     }
 }
 
+/// linter の結果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LintResult {
+    #[serde(rename = "lint")]
+    pub outcome: StageOutcome,
+    /// linter が報告した warning/finding 数。Skipped/Failed のときは 0。
+    #[serde(rename = "lint_warnings")]
+    pub warnings: usize,
+}
+
+/// ミューテーションテストの結果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MutationResult {
+    #[serde(rename = "mutation")]
+    pub outcome: StageOutcome,
+    /// 検出できたミュータント数。
+    #[serde(rename = "mutation_caught")]
+    pub caught: usize,
+    /// 生成されたミュータント総数。
+    #[serde(rename = "mutation_total")]
+    pub total: usize,
+}
+
 /// 1 候補に対する検証結果の集約。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Evaluation {
     pub candidate_id: String,
     pub compile: StageOutcome,
     pub test: StageOutcome,
-    /// linter（Rust: cargo clippy、Python: ruff）の実行結果。compile が Passed のときのみ実行。
-    pub lint: StageOutcome,
-    /// linter が報告した warning/finding 数。lint が Skipped/Failed のときは 0。
-    pub lint_warnings: usize,
+    /// linter（Rust: cargo clippy、Python: ruff）の結果。compile が Passed のときのみ実行。
+    /// JSON ではフラット（`lint` / `lint_warnings`）。
+    #[serde(flatten)]
+    pub lint: LintResult,
     /// property test の実行結果。--prop-tests 指定時のみ実行。
     pub prop_test: StageOutcome,
     /// Wasm サンドボックス実行の結果。--wasm-entry 指定時のみ実行。
     pub wasm: StageOutcome,
     /// Wasm 実行で消費した fuel（命令数）。実行しなかった場合は None。
     pub wasm_fuel_used: Option<u64>,
-    /// ミューテーションテスト（cargo mutants）の実行結果。--mutation 指定時のみ実行。
-    pub mutation: StageOutcome,
-    /// ミューテーションテストで検出できたミュータント数。
-    pub mutation_caught: usize,
-    /// ミューテーションテストで生成されたミュータント総数。
-    pub mutation_total: usize,
+    /// ミューテーションテスト（cargo mutants）の結果。--mutation 指定時のみ実行。
+    /// JSON ではフラット（`mutation` / `mutation_caught` / `mutation_total`）。
+    #[serde(flatten)]
+    pub mutation: MutationResult,
     /// cargo-audit が検出した RUSTSEC 脆弱性数。Rust 以外 / Cargo.lock なしは 0。
     pub audit_findings: usize,
     /// Criterion / #[bench] ベンチマークの中央値 (ns)。ベンチ未実行は None。
@@ -137,14 +158,18 @@ impl Evaluation {
             candidate_id: id.into(),
             compile: StageOutcome::Passed { duration_ms: 1 },
             test: StageOutcome::Passed { duration_ms: 1 },
-            lint: StageOutcome::Skipped,
-            lint_warnings: 0,
+            lint: LintResult {
+                outcome: StageOutcome::Skipped,
+                warnings: 0,
+            },
             prop_test: StageOutcome::Skipped,
             wasm: StageOutcome::Skipped,
             wasm_fuel_used: None,
-            mutation: StageOutcome::Skipped,
-            mutation_caught: 0,
-            mutation_total: 0,
+            mutation: MutationResult {
+                outcome: StageOutcome::Skipped,
+                caught: 0,
+                total: 0,
+            },
             audit_findings: 0,
             bench_ns: None,
             reasoning: StageOutcome::Skipped,

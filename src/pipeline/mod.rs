@@ -6,7 +6,7 @@ use crate::analysis::{
     count_staticcheck_findings, has_bench, SourceMetrics,
 };
 use crate::config::Rubric;
-use crate::model::{Candidate, Evaluation, Language, StageOutcome};
+use crate::model::{Candidate, Evaluation, Language, LintResult, MutationResult, StageOutcome};
 use crate::test_summary::{parse_test_summary, TestVerdict};
 use crate::{runner, scoring, wasm};
 use anyhow::{Context, Result};
@@ -310,14 +310,18 @@ fn assemble(candidate: &Candidate, r: StageResults, rubric: &Rubric) -> Evaluati
         candidate_id: candidate.id.clone(),
         compile: r.compile,
         test: r.test,
-        lint: r.lint,
-        lint_warnings: r.lint_warnings,
+        lint: LintResult {
+            outcome: r.lint,
+            warnings: r.lint_warnings,
+        },
         prop_test: r.prop_test,
         wasm: r.wasm,
         wasm_fuel_used: r.wasm_fuel_used,
-        mutation: r.mutation,
-        mutation_caught: r.mutation_caught,
-        mutation_total: r.mutation_total,
+        mutation: MutationResult {
+            outcome: r.mutation,
+            caught: r.mutation_caught,
+            total: r.mutation_total,
+        },
         audit_findings: r.audit_findings.unwrap_or(0),
         bench_ns: r.bench_ns,
         reasoning: if r.reasoning_score.is_some() {
@@ -748,7 +752,7 @@ mod copy_assemble_tests {
         assert_eq!(e.axes.maintainability, 0.0);
         assert_eq!(e.score, e.axes.total());
         assert_eq!(
-            (e.lint_warnings, e.mutation_caught, e.mutation_total),
+            (e.lint.warnings, e.mutation.caught, e.mutation.total),
             (3, 2, 5)
         );
         assert_eq!(

@@ -1,30 +1,15 @@
-use safecode_arena::model::{AxisScores, Evaluation, StageOutcome};
+use safecode_arena::model::{AxisScores, Evaluation};
 use safecode_arena::session::{check_and_persist, SaveStatus};
 use safecode_arena::store::Store;
 
 fn eval(id: &str, correctness: f64) -> Evaluation {
     Evaluation {
-        candidate_id: id.into(),
-        compile: StageOutcome::Passed { duration_ms: 1 },
-        test: StageOutcome::Passed { duration_ms: 1 },
-        lint: StageOutcome::Skipped,
-        lint_warnings: 0,
-        prop_test: StageOutcome::Skipped,
-        wasm: StageOutcome::Skipped,
-        wasm_fuel_used: None,
-        mutation: StageOutcome::Skipped,
-        mutation_caught: 0,
-        mutation_total: 0,
-        audit_findings: 0,
-        bench_ns: None,
-        reasoning: StageOutcome::Skipped,
-        reasoning_score: 0.0,
-        reasoning_comment: None,
         axes: AxisScores {
             correctness,
             ..AxisScores::default()
         },
         score: correctness,
+        ..Evaluation::for_test(id)
     }
 }
 
