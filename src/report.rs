@@ -93,7 +93,7 @@ fn mutation_cell(caught: usize, total: usize, outcome: &StageOutcome) -> String 
 }
 
 fn render_summary_table(out: &mut String, evals: &[Evaluation]) {
-    let has_mutation = evals.iter().any(|e| e.mutation_total > 0);
+    let has_mutation = evals.iter().any(|e| e.mutation.total > 0);
     out.push_str("## 比較サマリー\n\n");
     let mutation_col = if has_mutation { " Mutation |" } else { "" };
     let mutation_sep = if has_mutation { " -------- |" } else { "" };
@@ -109,7 +109,7 @@ fn render_summary_table(out: &mut String, evals: &[Evaluation]) {
         let mutation_cell_str = if has_mutation {
             format!(
                 " {} |",
-                mutation_cell(e.mutation_caught, e.mutation_total, &e.mutation)
+                mutation_cell(e.mutation.caught, e.mutation.total, &e.mutation.outcome)
             )
         } else {
             String::new()
@@ -127,7 +127,7 @@ fn render_summary_table(out: &mut String, evals: &[Evaluation]) {
             e.axes.resource_usage,
             stage_cell(&e.compile),
             stage_cell(&e.test),
-            lint_cell(&e.lint, e.lint_warnings),
+            lint_cell(&e.lint.outcome, e.lint.warnings),
             stage_cell(&e.prop_test),
             wasm_cell(&e.wasm, e.wasm_fuel_used),
             mutation_cell_str,
@@ -188,13 +188,13 @@ fn render_candidate_details(out: &mut String, evals: &[Evaluation]) {
         out.push_str(&format!("- テスト: {}\n", stage_cell(&e.test)));
         out.push_str(&format!(
             "- Clippy: {}\n",
-            lint_cell(&e.lint, e.lint_warnings)
+            lint_cell(&e.lint.outcome, e.lint.warnings)
         ));
         out.push_str(&format!("- PropTest: {}\n", stage_cell(&e.prop_test)));
-        if !matches!(e.mutation, StageOutcome::Skipped) {
+        if !matches!(e.mutation.outcome, StageOutcome::Skipped) {
             out.push_str(&format!(
                 "- Mutation: {}\n",
-                mutation_cell(e.mutation_caught, e.mutation_total, &e.mutation)
+                mutation_cell(e.mutation.caught, e.mutation.total, &e.mutation.outcome)
             ));
         }
         if !matches!(e.wasm, StageOutcome::Skipped) {
@@ -211,7 +211,7 @@ fn render_candidate_details(out: &mut String, evals: &[Evaluation]) {
         for (label, stage) in [
             ("コンパイル", &e.compile),
             ("テスト", &e.test),
-            ("Lint", &e.lint),
+            ("Lint", &e.lint.outcome),
             ("PropTest", &e.prop_test),
         ] {
             if let StageOutcome::Failed { detail } = stage {
@@ -337,7 +337,7 @@ fn render_comparison(out: &mut String, evals: &[Evaluation]) {
     out.push('\n');
 
     // Clippy warnings
-    let warns: Vec<usize> = evals.iter().map(|e| e.lint_warnings).collect();
+    let warns: Vec<usize> = evals.iter().map(|e| e.lint.warnings).collect();
     let min_warn = warns.iter().copied().min().unwrap_or(0);
     out.push_str("| Clippy警告 |");
     for w in &warns {
@@ -437,7 +437,7 @@ pub fn render_html(evals: &[Evaluation]) -> String {
             e.axes.correctness, e.axes.security, e.axes.performance, e.axes.maintainability,
             stage_label(&e.compile), stage_cell(&e.compile),
             stage_label(&e.test), stage_cell(&e.test),
-            lint_cell(&e.lint, e.lint_warnings),
+            lint_cell(&e.lint.outcome, e.lint.warnings),
             stage_label(&e.prop_test), stage_cell(&e.prop_test),
         ));
     }
@@ -492,7 +492,7 @@ pub fn render_html(evals: &[Evaluation]) -> String {
         body.push_str(&format!("<li>テスト: {}</li>\n", stage_cell(&e.test)));
         body.push_str(&format!(
             "<li>Clippy: {}</li>\n",
-            lint_cell(&e.lint, e.lint_warnings)
+            lint_cell(&e.lint.outcome, e.lint.warnings)
         ));
         body.push_str(&format!(
             "<li>PropTest: {}</li>\n",
@@ -711,9 +711,9 @@ mod tests {
     }
 
     fn with_mutation(mut e: Evaluation, caught: usize, total: usize) -> Evaluation {
-        e.mutation = passed(1);
-        e.mutation_caught = caught;
-        e.mutation_total = total;
+        e.mutation.outcome = passed(1);
+        e.mutation.caught = caught;
+        e.mutation.total = total;
         e
     }
 
@@ -1000,8 +1000,8 @@ mod tests {
     fn md_clippy_all_equal_warnings_not_highlighted() {
         let mut a = eval("a", 50.0);
         let mut b = eval("b", 40.0);
-        a.lint_warnings = 2;
-        b.lint_warnings = 2;
+        a.lint.warnings = 2;
+        b.lint.warnings = 2;
         let md = render(&[a, b]);
         assert_eq!(
             line_starting(&md, "| Clippy警告"),
@@ -1013,8 +1013,8 @@ mod tests {
     fn md_clippy_fewest_warnings_highlighted_when_different() {
         let mut a = eval("a", 50.0);
         let mut b = eval("b", 40.0);
-        a.lint_warnings = 3;
-        b.lint_warnings = 1;
+        a.lint.warnings = 3;
+        b.lint.warnings = 1;
         let md = render(&[a, b]);
         assert_eq!(
             line_starting(&md, "| Clippy警告"),
