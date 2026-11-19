@@ -31,7 +31,7 @@ libc = "0.2"
 # タイムスタンプ（レポート生成）
 chrono = "0.4"
 # 評価結果の永続化（run 履歴・リグレッション検出）。bundled で system sqlite 非依存。
-rusqlite = { version = "0.41", features = ["bundled"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
 wasmtime = "48.0.7"
 wasmtime-wasi = "48.0.7"
 # LLM レビュー（phase14）— 軽量 HTTP クライアント
