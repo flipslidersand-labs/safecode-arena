@@ -231,14 +231,18 @@ pub(crate) fn run_rust_stages(
     Ok(StageResults {
         compile,
         test,
-        lint,
-        lint_warnings,
+        lint: LintResult {
+            outcome: lint,
+            warnings: lint_warnings,
+        },
         prop_test,
         wasm,
         wasm_fuel_used,
-        mutation,
-        mutation_caught,
-        mutation_total,
+        mutation: MutationResult {
+            outcome: mutation,
+            caught: mutation_caught,
+            total: mutation_total,
+        },
         audit_findings,
         bench_ns,
         ..Default::default()
