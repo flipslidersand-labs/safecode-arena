@@ -1,5 +1,7 @@
 # SafeCode Arena
 
+Release type: `reference`
+
 [日本語版 README](README.ja.md)
 
 A verification runner that takes multiple AI-generated code candidates, **evaluates them automatically in an isolated sandbox, scores them, and picks the best one to adopt**.
