@@ -105,6 +105,19 @@ cargo fmt
 - [ADR](docs/adr/)
 - [変更履歴](CHANGELOG.md)
 
+## v1 の範囲
+
+コードとテストを静的に照合した結果（未実行）。
+
+- [x] `safecode evaluate` が 1 つ以上の候補を評価してレポートを出す（`--out`、`--format json`、`--config` の重み）
+- [x] `--db` で実行結果を保存し、`safecode history` で回帰検出つきで表示できる
+- [x] `--wasm-entry` / `--wasm-fuel` で Wasm サンドボックス実行ができる
+- [x] Rust / Python / Go / JavaScript / TypeScript を拡張子で自動判定し、言語表のステージを回す
+- [x] `--llm-review` と `safecode generate <spec> --candidates N` が記載の環境変数で動く
+- [ ] パイプライン図のとおり fuzz ステージがある
+- [ ] `cargo test --lib --tests` と `cargo clippy ... -D warnings` が、ignored テストの workflow も含めて CI で通っている
+- [ ] `Cargo.toml` の版が 1.0.0 で、CHANGELOG にリリース済みの節がある
+
 ## ステータス
 
 現在の版: `0.1.0`（タグ・リリースは未作成）。直近の変更は[変更履歴](CHANGELOG.md)を参照。
