@@ -1,5 +1,7 @@
 # SafeCode Arena
 
+Release type: `reference`
+
 [日本語版 README](README.ja.md)
 
 A verification runner that takes multiple AI-generated code candidates, **evaluates them automatically in an isolated sandbox, scores them, and picks the best one to adopt**.
@@ -9,8 +11,10 @@ A verification runner that takes multiple AI-generated code candidates, **evalua
 ## Pipeline
 
 ```text
-spec → N code candidates → compile → test → (property/fuzz/perf/static analysis) → score → adoption decision
+spec → N code candidates → compile → test → (property test / lint / mutation / Wasm sandbox / benchmark / audit / LLM review) → score → adoption decision
 ```
+
+The optional stages depend on the language and on the flags passed (see the language table below). Fuzzing is not implemented yet.
 
 ## Usage
 
@@ -105,11 +109,24 @@ cargo fmt
 - [ADRs](docs/adr/)
 - [Changelog](CHANGELOG.md)
 
+## v1 scope
+
+Checked statically against code and tests (not executed).
+
+- [x] `safecode evaluate` evaluates one or more candidates and emits a report (`--out`, `--format json`, `--config` weights)
+- [x] `--db` persists runs and `safecode history` shows them, with regression detection
+- [x] Wasm sandbox execution via `--wasm-entry` / `--wasm-fuel`
+- [x] Rust / Python / Go / JavaScript / TypeScript are auto-detected by extension, with the stages in the language table
+- [x] `--llm-review` and `safecode generate <spec> --candidates N` work with the documented environment variables
+- [ ] The pipeline includes a fuzz stage (planned; not implemented, so it is not in the Pipeline diagram)
+- [ ] `cargo test --lib --tests` and `cargo clippy ... -D warnings` pass in CI, including the ignored-tests workflow
+- [ ] Version is 1.0.0 in `Cargo.toml`, and CHANGELOG has a released section
+
 ## Status
 
 Current version: `0.1.0` (not tagged or released yet). Recent changes are listed in the [changelog](CHANGELOG.md).
 
-✅ Phases 1–15 complete. All scoring axes measured. SQLite persistence + regression detection. Wasm sandbox. **Multi-language**: Rust / Python / Go / JavaScript / TypeScript auto-detected by extension. **Mutation testing**: Rust (`cargo-mutants`), Python (`mutmut`), Go (`gremlins`) integrated and weight-aware. **Criterion benchmarks** integrated for performance axis. **LLM semantic review** (Claude/Ollama) for reasoning axis. **`generate` command**: produce N candidates from a natural-language spec and rank them automatically. GitHub Actions CI with regression detection.
+Implemented features (merged changes are in the [changelog](CHANGELOG.md); per-language stages are in the table above): SQLite persistence + regression detection. Wasm sandbox. **Multi-language**: Rust / Python / Go / JavaScript / TypeScript auto-detected by extension. **Mutation testing**: Rust (`cargo-mutants`), Python (`mutmut`), Go (`gremlins`) integrated and weight-aware. **Criterion benchmarks** integrated for performance axis. **LLM semantic review** (Claude/Ollama) for reasoning axis. **`generate` command**: produce N candidates from a natural-language spec and rank them automatically. GitHub Actions CI with regression detection.
 
 ## License
 

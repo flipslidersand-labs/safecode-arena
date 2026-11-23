@@ -1,5 +1,7 @@
 # SafeCode Arena
 
+Release type: `reference`
+
 AI が生成した複数のコード候補を、**安全な隔離環境で自動検証し、採点して採用候補を決める**検証ランナー。
 
 > プロジェクトの主役はコード生成ではなく、「生成物を信用可能な状態へ持っていく検証処理系」。
@@ -7,8 +9,10 @@ AI が生成した複数のコード候補を、**安全な隔離環境で自動
 ## パイプライン
 
 ```text
-仕様 → 複数コード候補 → コンパイル → テスト → (property/fuzz/性能/静的解析) → 採点 → 採用候補決定
+仕様 → 複数コード候補 → コンパイル → テスト → (property test / lint / mutation / Wasm サンドボックス / ベンチマーク / audit / LLM レビュー) → 採点 → 採用候補決定
 ```
+
+任意のステージは言語と指定したフラグによって異なる（下の言語表を参照）。fuzz は未実装。
 
 ## 使い方
 
@@ -103,11 +107,24 @@ cargo fmt
 - [ADR](docs/adr/)
 - [変更履歴](CHANGELOG.md)
 
+## v1 の範囲
+
+コードとテストを静的に照合した結果（未実行）。
+
+- [x] `safecode evaluate` が 1 つ以上の候補を評価してレポートを出す（`--out`、`--format json`、`--config` の重み）
+- [x] `--db` で実行結果を保存し、`safecode history` で回帰検出つきで表示できる
+- [x] `--wasm-entry` / `--wasm-fuel` で Wasm サンドボックス実行ができる
+- [x] Rust / Python / Go / JavaScript / TypeScript を拡張子で自動判定し、言語表のステージを回す
+- [x] `--llm-review` と `safecode generate <spec> --candidates N` が記載の環境変数で動く
+- [ ] fuzz ステージがある（予定。未実装のためパイプライン図には載せていない）
+- [ ] `cargo test --lib --tests` と `cargo clippy ... -D warnings` が、ignored テストの workflow も含めて CI で通っている
+- [ ] `Cargo.toml` の版が 1.0.0 で、CHANGELOG にリリース済みの節がある
+
 ## ステータス
 
 現在の版: `0.1.0`（タグ・リリースは未作成）。直近の変更は[変更履歴](CHANGELOG.md)を参照。
 
-✅ Phase 1〜15 完了。全採点軸を実測。SQLite 永続化 + リグレッション検出。Wasm サンドボックス。**多言語対応**: Rust / Python / Go / JavaScript / TypeScript を拡張子で自動判定。**Mutation Testing**: Rust（`cargo-mutants`）、Python（`mutmut`）、Go（`gremlins`）。**Criterion ベンチマーク**で performance 軸を実測。**LLM セマンティックレビュー**（Claude / Ollama）で reasoning 軸を採点。**`generate` コマンド**: 自然言語の spec から N 候補を生成して自動で順位付け。GitHub Actions CI でリグレッションを検出。
+実装済みの機能（マージ済みの変更は[変更履歴](CHANGELOG.md)、言語別のステージは言語表を参照）: SQLite 永続化 + リグレッション検出。Wasm サンドボックス。**多言語対応**: Rust / Python / Go / JavaScript / TypeScript を拡張子で自動判定。**Mutation Testing**: Rust（`cargo-mutants`）、Python（`mutmut`）、Go（`gremlins`）。**Criterion ベンチマーク**で performance 軸を実測。**LLM セマンティックレビュー**（Claude / Ollama）で reasoning 軸を採点。**`generate` コマンド**: 自然言語の spec から N 候補を生成して自動で順位付け。GitHub Actions CI でリグレッションを検出。
 
 ## ライセンス
 
