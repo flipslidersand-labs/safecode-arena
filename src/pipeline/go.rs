@@ -89,11 +89,15 @@ pub(crate) fn run_go_stages(
     Ok(StageResults {
         compile,
         test,
-        lint,
-        lint_warnings,
-        mutation,
-        mutation_caught,
-        mutation_total,
+        lint: LintResult {
+            outcome: lint,
+            warnings: lint_warnings,
+        },
+        mutation: MutationResult {
+            outcome: mutation,
+            caught: mutation_caught,
+            total: mutation_total,
+        },
         ..Default::default()
     })
 }

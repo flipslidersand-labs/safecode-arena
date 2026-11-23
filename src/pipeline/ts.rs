@@ -68,8 +68,10 @@ pub(crate) fn run_ts_stages(
     Ok(StageResults {
         compile,
         test,
-        lint,
-        lint_warnings,
+        lint: LintResult {
+            outcome: lint,
+            warnings: lint_warnings,
+        },
         ..Default::default()
     })
 }
